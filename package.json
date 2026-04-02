@@ -1,0 +1,11 @@
+{
+  "name": "nba-analytics-system",
+  "version": "1.0.0",
+  "description": "NBA Analytics — iSports API + The Odds API com backend local sem CORS",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {},
+  "engines": { "node": ">=16" }
+}
