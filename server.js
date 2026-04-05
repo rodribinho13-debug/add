@@ -457,8 +457,8 @@ async function handleAPI(pathname, query, res) {
   }
 }
 
-// ─── Servidor estático + API ──────────────────────────────
-const server = http.createServer(async (req, res) => {
+// ─── Handler principal (local + Vercel) ───────────────────
+async function requestHandler(req, res) {
   const parsed   = url.parse(req.url, true);
   const pathname = parsed.pathname;
 
@@ -482,10 +482,18 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': MIME[ext] || 'text/plain', ...CORS_HEADERS });
     res.end(data);
   });
-});
+}
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`\n  🏀 NBA Analytics System rodando em http://localhost:${PORT}`);
-  console.log('  ✅ Cache ativo (1h para iSports, 30min para odds)');
-  console.log('  ✅ Odds filtradas exclusivamente pela Bet365\n');
-});
+// ─── Modo local: inicia o servidor HTTP ───────────────────
+if (require.main === module) {
+  const server = require('http').createServer(requestHandler);
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`\n  🏀 NBA Analytics System rodando em http://localhost:${PORT}`);
+    console.log('  ✅ Cache ativo (1h para iSports, 30min para odds)');
+    console.log('  ✅ Odds filtradas exclusivamente pela Bet365');
+    console.log('  ✅ Contador de requisições ativo (limite: 180/200 por dia)\n');
+  });
+}
+
+// ─── Exporta handler para Vercel (serverless) ─────────────
+module.exports = requestHandler;
