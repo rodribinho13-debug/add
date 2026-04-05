@@ -1,0 +1,15 @@
+{
+  "name": "nba-analytics-system",
+  "version": "2.0.0",
+  "description": "NBA Analytics com modelos avançados, bot e backtest",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "bot": "node bot.js",
+    "backtest": "node backtest.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.3.1"
+  },
+  "engines": { "node": ">=16" }
+}
