@@ -379,13 +379,15 @@ async function handleAPI(pathname, query, res) {
       const bankroll      = parseFloat(query.bankroll)      || 5000;
       const kellyFraction = parseFloat(query.kellyFraction) || 0.25;
 
-      // Busca dados do dia + stats dos últimos 3 dias para melhorar médias
-      const [statsRes, oddsData, recentRes] = await Promise.allSettled([
-        iSportsFetch('/sport/basketball/stats', { date }),
+      // 1. Schedule de HOJE via schedule/basic (jogos ainda não iniciados, status 0/-1)
+      // 2. Stats dos últimos 5 dias via stats (médias históricas dos times)
+      // 3. Odds Bet365
+      const [schedRes, oddsData, recentRes] = await Promise.allSettled([
+        iSportsFetch('/sport/basketball/schedule/basic', { date }),
         fetchOddsWithBet365('basketball_nba'),
         (async () => {
           const arr = [];
-          for (let i = 1; i <= 3; i++) {
+          for (let i = 1; i <= 5; i++) {
             const d = new Date(date);
             d.setDate(d.getDate() - i);
             const ds = d.toISOString().slice(0, 10);
@@ -399,11 +401,12 @@ async function handleAPI(pathname, query, res) {
         })(),
       ]);
 
-      const statsData  = statsRes.status  === 'fulfilled' ? extractList(statsRes.value.body) : [];
+      const schedData  = schedRes.status  === 'fulfilled' ? extractList(schedRes.value.body) : [];
       const odds       = oddsData.status  === 'fulfilled' ? oddsData.value : [];
       const recentData = recentRes.status === 'fulfilled' ? recentRes.value : [];
 
-      const schedule = statsData.map(m => ({
+      // Monta schedule com jogos NBA (status -1 ou 0 = não iniciados)
+      const schedule = schedData.map(m => ({
         matchId:   String(m.matchId || m.id || ''),
         homeId:    String(m.homeTeamId || m.homeId || ''),
         awayId:    String(m.awayTeamId || m.awayId || ''),
@@ -412,22 +415,29 @@ async function handleAPI(pathname, query, res) {
         homeScore: m.homeScore,
         awayScore: m.awayScore,
         status:    m.status != null ? m.status : -1,
+        matchTime: m.matchTime || m.startTime || null,
         leagueName: m.leagueName || 'NBA',
         leagueId:  String(m.leagueId || ''),
       })).filter(isNBA);
 
       const cfg = { bankroll, kellyFraction, evMin, oddMin };
-      const allStats = [...statsData, ...recentData];
       const entries = await analytics.generateAllEntries(
-        { schedule, stats: allStats, odds },
+        { schedule, stats: recentData, odds },
         cfg
       );
       const filtered = entries.filter(e => e.ev >= evMin && e.odd >= oddMin);
+
+      console.log(`[bot/daily] ${date}: ${schedule.length} jogos | ${odds.length} odds | ${filtered.length} entradas`);
 
       return sendJSON(res, {
         ok: true, date,
         entries: filtered,
         total: filtered.length,
+        debug: {
+          scheduleGames: schedule.length,
+          oddsGames: odds.length,
+          historicalStats: recentData.length,
+        },
         requestsUsed: reqCounter.status(),
       });
     }
