@@ -487,7 +487,16 @@ async function requestHandler(req, res) {
   filePath = path.join(__dirname, filePath);
 
   fs.readFile(filePath, (err, data) => {
-    if (err) { res.writeHead(404, CORS_HEADERS); return res.end('Not found'); }
+    if (err) {
+      // Fallback: serve index.html para qualquer rota desconhecida (SPA)
+      const idx = path.join(__dirname, 'index.html');
+      fs.readFile(idx, (e2, html) => {
+        if (e2) { res.writeHead(404, CORS_HEADERS); return res.end('Not found'); }
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS_HEADERS });
+        res.end(html);
+      });
+      return;
+    }
     const ext = path.extname(filePath);
     res.writeHead(200, { 'Content-Type': MIME[ext] || 'text/plain', ...CORS_HEADERS });
     res.end(data);

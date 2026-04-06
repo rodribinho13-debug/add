@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NBA Analytics — Dashboard</title>
+  <style>
+    :root {
+      --bg:       #0d1117;
+      --surface:  #161b22;
+      --border:   #30363d;
+      --text:     #e6edf3;
+      --muted:    #8b949e;
+      --accent:   #58a6ff;
+      --green:    #3fb950;
+      --yellow:   #d29922;
+      --red:      #f85149;
+      --orange:   #fb8500;
+      --purple:   #bc8cff;
+      --radius:   10px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; font-size: 14px; }
+
+    /* ── Layout ── */
+    .app { display: grid; grid-template-columns: 280px 1fr; min-height: 100vh; }
+
+    /* ── Sidebar ── */
+    aside {
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      padding: 20px 16px;
+      display: flex; flex-direction: column; gap: 24px;
+      position: sticky; top: 0; height: 100vh; overflow-y: auto;
+    }
+    .logo { font-size: 18px; font-weight: 700; color: var(--accent); display: flex; align-items: center; gap: 8px; }
+    .logo span { font-size: 22px; }
+
+    .section-label {
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: .08em; color: var(--muted); margin-bottom: 8px;
+    }
+
+    .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+    .field label { font-size: 12px; color: var(--muted); }
+    .field input[type=number], .field input[type=date] {
+      background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+      color: var(--text); padding: 7px 10px; font-size: 13px; width: 100%;
+      outline: none; transition: border-color .15s;
+    }
+    .field input:focus { border-color: var(--accent); }
+    .field .hint { font-size: 11px; color: var(--muted); }
+
+    .slider-wrap { display: flex; align-items: center; gap: 8px; }
+    .slider-wrap input[type=range] {
+      flex: 1; accent-color: var(--accent); cursor: pointer;
+    }
+    .slider-val { font-size: 13px; font-weight: 600; color: var(--accent); min-width: 38px; text-align: right; }
+
+    .btn-fetch {
+      background: var(--accent); color: #000; border: none; border-radius: 8px;
+      padding: 11px; font-size: 14px; font-weight: 700; cursor: pointer;
+      width: 100%; transition: opacity .15s;
+    }
+    .btn-fetch:hover { opacity: .85; }
+    .btn-fetch:disabled { opacity: .4; cursor: default; }
+
+    .api-status {
+      background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+      padding: 10px 12px; font-size: 12px;
+    }
+    .api-status .row { display: flex; justify-content: space-between; margin-bottom: 4px; }
+    .progress-bar { height: 6px; background: var(--border); border-radius: 99px; overflow: hidden; margin-top: 6px; }
+    .progress-fill { height: 100%; background: var(--green); border-radius: 99px; transition: width .4s; }
+    .progress-fill.warn  { background: var(--yellow); }
+    .progress-fill.danger{ background: var(--red); }
+
+    /* ── Main ── */
+    main { padding: 24px; display: flex; flex-direction: column; gap: 20px; overflow-x: hidden; }
+
+    /* ── Summary cards ── */
+    .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+    .card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 16px; display: flex; flex-direction: column; gap: 4px;
+    }
+    .card .c-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+    .card .c-value { font-size: 22px; font-weight: 700; }
+    .card .c-sub   { font-size: 11px; color: var(--muted); }
+    .green { color: var(--green); }
+    .yellow{ color: var(--yellow); }
+    .red   { color: var(--red); }
+    .blue  { color: var(--accent); }
+    .purple{ color: var(--purple); }
+
+    /* ── Filters bar ── */
+    .filter-bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .filter-btn {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 20px;
+      color: var(--muted); padding: 5px 14px; font-size: 12px; font-weight: 600;
+      cursor: pointer; transition: all .15s;
+    }
+    .filter-btn.active { background: var(--accent); border-color: var(--accent); color: #000; }
+    .sort-select {
+      margin-left: auto; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text); padding: 5px 10px; font-size: 12px; outline: none;
+    }
+
+    /* ── Entries grid ── */
+    .entries { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; }
+
+    .entry-card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 16px; display: flex; flex-direction: column; gap: 10px;
+      transition: transform .12s, border-color .15s;
+      cursor: default;
+    }
+    .entry-card:hover { transform: translateY(-2px); border-color: var(--accent); }
+
+    .entry-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+    .entry-desc { font-size: 13px; font-weight: 600; line-height: 1.4; flex: 1; }
+    .badge {
+      font-size: 10px; font-weight: 700; padding: 3px 8px; border-radius: 20px;
+      text-transform: uppercase; white-space: nowrap; flex-shrink: 0;
+    }
+    .badge-total    { background: #1a3a5c; color: var(--accent); }
+    .badge-spread   { background: #2a1f4a; color: var(--purple); }
+    .badge-h2h      { background: #1a3a28; color: var(--green); }
+    .badge-prop     { background: #3a2a10; color: var(--yellow); }
+
+    .entry-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+    .metric { background: var(--bg); border-radius: 6px; padding: 8px 10px; text-align: center; }
+    .metric .m-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+    .metric .m-val   { font-size: 16px; font-weight: 700; margin-top: 2px; }
+
+    .ev-bar-wrap { display: flex; align-items: center; gap: 8px; }
+    .ev-bar-wrap span { font-size: 11px; color: var(--muted); width: 32px; text-align: right; }
+    .ev-bar { flex: 1; height: 5px; background: var(--border); border-radius: 99px; overflow: hidden; }
+    .ev-fill { height: 100%; border-radius: 99px; }
+
+    .entry-detail {
+      background: var(--bg); border-radius: 6px; padding: 8px 10px;
+      font-size: 11px; color: var(--muted); line-height: 1.6;
+    }
+
+    .entry-valor {
+      display: flex; justify-content: space-between; align-items: center;
+      padding-top: 6px; border-top: 1px solid var(--border);
+    }
+    .entry-valor .v-label { font-size: 11px; color: var(--muted); }
+    .entry-valor .v-amount { font-size: 15px; font-weight: 700; }
+
+    /* ── Empty / loading states ── */
+    .state {
+      grid-column: 1/-1; text-align: center; padding: 60px 20px;
+      color: var(--muted); font-size: 14px; display: flex;
+      flex-direction: column; align-items: center; gap: 12px;
+    }
+    .state .big { font-size: 40px; }
+    .spinner {
+      width: 36px; height: 36px; border: 3px solid var(--border);
+      border-top-color: var(--accent); border-radius: 50%;
+      animation: spin .7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Debug panel ── */
+    .debug-panel {
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 14px 16px;
+    }
+    .debug-panel summary { cursor: pointer; font-size: 12px; color: var(--muted); font-weight: 600; }
+    .debug-pre {
+      margin-top: 10px; background: var(--bg); border-radius: 6px; padding: 10px;
+      font-size: 11px; font-family: monospace; color: var(--muted); overflow-x: auto;
+      white-space: pre-wrap; word-break: break-all;
+    }
+
+    /* ── Responsive ── */
+    @media (max-width: 700px) {
+      .app { grid-template-columns: 1fr; }
+      aside { height: auto; position: static; border-right: none; border-bottom: 1px solid var(--border); }
+    }
+  </style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ══════════ SIDEBAR ══════════ -->
+  <aside>
+    <div class="logo"><span>🏀</span> NBA Analytics</div>
+
+    <!-- Date -->
+    <div>
+      <div class="section-label">Data</div>
+      <div class="field">
+        <label>Data dos jogos</label>
+        <input type="date" id="inp-date" />
+      </div>
+    </div>
+
+    <!-- Filters -->
+    <div>
+      <div class="section-label">Filtros de Qualidade</div>
+
+      <div class="field">
+        <label>EV mínimo (%)</label>
+        <div class="slider-wrap">
+          <input type="range" id="sl-ev" min="0" max="30" step="0.5" value="3" />
+          <span class="slider-val" id="sl-ev-val">3.0%</span>
+        </div>
+        <span class="hint">Expected Value mínimo para exibir a entrada</span>
+      </div>
+
+      <div class="field">
+        <label>Odd mínima</label>
+        <div class="slider-wrap">
+          <input type="range" id="sl-odd" min="1.1" max="5" step="0.05" value="1.65" />
+          <span class="slider-val" id="sl-odd-val">1.65</span>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Probabilidade mínima (%)</label>
+        <div class="slider-wrap">
+          <input type="range" id="sl-prob" min="25" max="75" step="1" value="40" />
+          <span class="slider-val" id="sl-prob-val">40%</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Kelly / Bankroll -->
+    <div>
+      <div class="section-label">Gestão de Banca</div>
+
+      <div class="field">
+        <label>Banca (R$)</label>
+        <input type="number" id="inp-bankroll" value="5000" min="100" step="100" />
+      </div>
+
+      <div class="field">
+        <label>Fração Kelly (%)</label>
+        <div class="slider-wrap">
+          <input type="range" id="sl-kelly" min="5" max="50" step="5" value="25" />
+          <span class="slider-val" id="sl-kelly-val">25%</span>
+        </div>
+        <span class="hint">Kelly completo = 100%. Recomendado: 25%</span>
+      </div>
+    </div>
+
+    <button class="btn-fetch" id="btn-fetch">Buscar Palpites</button>
+
+    <!-- API status -->
+    <div>
+      <div class="section-label">Uso da API iSports</div>
+      <div class="api-status" id="api-status">
+        <div class="row"><span>Requisições</span><span id="req-count">—</span></div>
+        <div class="row"><span>Restante</span><span id="req-rem">—</span></div>
+        <div class="row"><span>Limite</span><span id="req-limit">180/dia</span></div>
+        <div class="progress-bar"><div class="progress-fill" id="req-bar" style="width:0%"></div></div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ══════════ MAIN ══════════ -->
+  <main>
+    <!-- Summary -->
+    <div class="cards" id="summary-cards">
+      <div class="card"><div class="c-label">Palpites</div><div class="c-value blue" id="s-total">—</div><div class="c-sub">entradas qualificadas</div></div>
+      <div class="card"><div class="c-label">Melhor EV</div><div class="c-value green" id="s-best-ev">—</div><div class="c-sub">expected value</div></div>
+      <div class="card"><div class="c-label">Total a apostar</div><div class="c-value yellow" id="s-invest">—</div><div class="c-sub">R$ sugerido</div></div>
+      <div class="card"><div class="c-label">% da Banca</div><div class="c-value purple" id="s-pct">—</div><div class="c-sub">exposição total</div></div>
+      <div class="card"><div class="c-label">Jogos no schedule</div><div class="c-value" id="s-games">—</div><div class="c-sub">jogos hoje</div></div>
+      <div class="card"><div class="c-label">Odds disponíveis</div><div class="c-value" id="s-odds">—</div><div class="c-sub">jogos com odds</div></div>
+    </div>
+
+    <!-- Filter bar -->
+    <div class="filter-bar">
+      <button class="filter-btn active" data-tipo="all">Todos</button>
+      <button class="filter-btn" data-tipo="total">Totais</button>
+      <button class="filter-btn" data-tipo="spread">Spreads</button>
+      <button class="filter-btn" data-tipo="h2h">Moneyline</button>
+      <button class="filter-btn" data-tipo="player_prop">Props</button>
+      <select class="sort-select" id="sort-select">
+        <option value="ev">Ordenar por EV</option>
+        <option value="odd">Ordenar por Odd</option>
+        <option value="prob">Ordenar por Probabilidade</option>
+        <option value="kelly">Ordenar por Kelly</option>
+        <option value="valor">Ordenar por Valor Sugerido</option>
+      </select>
+    </div>
+
+    <!-- Entries -->
+    <div class="entries" id="entries-grid">
+      <div class="state">
+        <div class="big">🏀</div>
+        <div>Configure os parâmetros e clique em <strong>Buscar Palpites</strong></div>
+      </div>
+    </div>
+
+    <!-- Debug -->
+    <details class="debug-panel" id="debug-panel" style="display:none">
+      <summary>Debug / Resposta bruta da API</summary>
+      <pre class="debug-pre" id="debug-pre"></pre>
+    </details>
+  </main>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────
+let allEntries = [];
+let activeFilter = 'all';
+
+// ── Init ───────────────────────────────────────────
+(function init() {
+  const today = new Date().toISOString().slice(0, 10);
+  document.getElementById('inp-date').value = today;
+  bindSlider('sl-ev',    'sl-ev-val',    v => v.toFixed(1) + '%');
+  bindSlider('sl-odd',   'sl-odd-val',   v => v.toFixed(2));
+  bindSlider('sl-prob',  'sl-prob-val',  v => v.toFixed(0) + '%');
+  bindSlider('sl-kelly', 'sl-kelly-val', v => v.toFixed(0) + '%');
+  document.getElementById('btn-fetch').addEventListener('click', fetchPalpites);
+
+  document.querySelectorAll('.filter-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      activeFilter = btn.dataset.tipo;
+      renderEntries();
+    });
+  });
+
+  document.getElementById('sort-select').addEventListener('change', renderEntries);
+
+  // Re-render on prob slider change (client-side filter only)
+  document.getElementById('sl-prob').addEventListener('input', renderEntries);
+})();
+
+function bindSlider(id, valId, fmt) {
+  const sl = document.getElementById(id);
+  const vl = document.getElementById(valId);
+  const update = () => { vl.textContent = fmt(parseFloat(sl.value)); };
+  sl.addEventListener('input', update);
+  update();
+}
+
+// ── Fetch ──────────────────────────────────────────
+async function fetchPalpites() {
+  const btn  = document.getElementById('btn-fetch');
+  const grid = document.getElementById('entries-grid');
+  btn.disabled = true;
+  btn.textContent = 'Buscando...';
+  grid.innerHTML = '<div class="state"><div class="spinner"></div><div>Consultando APIs e calculando EV...</div></div>';
+
+  const date        = document.getElementById('inp-date').value;
+  const evMin       = parseFloat(document.getElementById('sl-ev').value) / 100;
+  const oddMin      = parseFloat(document.getElementById('sl-odd').value);
+  const bankroll    = parseFloat(document.getElementById('inp-bankroll').value) || 5000;
+  const kellyFrac   = parseFloat(document.getElementById('sl-kelly').value) / 100;
+
+  const params = new URLSearchParams({ date, minEV: evMin, minOdd: oddMin, bankroll, kellyFraction: kellyFrac });
+
+  try {
+    const res  = await fetch(`/api/bot/daily?${params}`);
+    const data = await res.json();
+
+    // Debug
+    document.getElementById('debug-panel').style.display = '';
+    document.getElementById('debug-pre').textContent = JSON.stringify(data, null, 2);
+
+    if (!data.ok) throw new Error(data.error || 'Erro desconhecido');
+
+    allEntries = data.entries || [];
+    updateSummary(data, bankroll);
+    updateAPIStatus(data.requestsUsed);
+    renderEntries();
+  } catch (e) {
+    grid.innerHTML = `<div class="state"><div class="big">⚠️</div><div>${e.message}</div></div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Buscar Palpites';
+  }
+}
+
+// ── Summary ────────────────────────────────────────
+function updateSummary(data, bankroll) {
+  const entries = data.entries || [];
+  const totalVal = entries.reduce((s, e) => s + (e.valor_sugerido || 0), 0);
+  const bestEV   = entries.length ? entries[0].ev : null;
+  const pct      = bankroll > 0 ? (totalVal / bankroll) * 100 : 0;
+
+  setText('s-total',   entries.length);
+  setText('s-best-ev', bestEV != null ? (bestEV * 100).toFixed(1) + '%' : '—');
+  setText('s-invest',  'R$ ' + Math.round(totalVal).toLocaleString('pt-BR'));
+  setText('s-pct',     pct.toFixed(1) + '%');
+  setText('s-games',   data.debug?.scheduleGames ?? '—');
+  setText('s-odds',    data.debug?.oddsGames     ?? '—');
+}
+
+function updateAPIStatus(status) {
+  if (!status) return;
+  const pct = Math.round((status.used / status.limit) * 100);
+  setText('req-count', status.used + '/' + status.limit);
+  setText('req-rem',   status.remaining);
+  const bar = document.getElementById('req-bar');
+  bar.style.width = pct + '%';
+  bar.className = 'progress-fill' + (pct >= 90 ? ' danger' : pct >= 70 ? ' warn' : '');
+}
+
+function setText(id, val) {
+  document.getElementById(id).textContent = val;
+}
+
+// ── Render entries ─────────────────────────────────
+function renderEntries() {
+  const grid      = document.getElementById('entries-grid');
+  const sortKey   = document.getElementById('sort-select').value;
+  const probMin   = parseFloat(document.getElementById('sl-prob').value) / 100;
+
+  let list = allEntries.filter(e => {
+    if (activeFilter !== 'all' && e.tipo !== activeFilter) return false;
+    if ((e.prob || 0) < probMin) return false;
+    return true;
+  });
+
+  list = [...list].sort((a, b) => {
+    switch (sortKey) {
+      case 'odd':   return b.odd   - a.odd;
+      case 'prob':  return b.prob  - a.prob;
+      case 'kelly': return b.kelly - a.kelly;
+      case 'valor': return (b.valor_sugerido || 0) - (a.valor_sugerido || 0);
+      default:      return b.ev    - a.ev;
+    }
+  });
+
+  if (list.length === 0) {
+    grid.innerHTML = `<div class="state">
+      <div class="big">🔍</div>
+      <div>Nenhuma entrada encontrada com os filtros atuais.<br>
+      Tente reduzir EV mínimo ou probabilidade mínima.</div>
+    </div>`;
+    return;
+  }
+
+  grid.innerHTML = list.map(e => entryCard(e)).join('');
+}
+
+// ── Entry card ─────────────────────────────────────
+function entryCard(e) {
+  const evPct   = (e.ev   * 100).toFixed(1);
+  const probPct = (e.prob * 100).toFixed(1);
+  const evBar   = Math.min(e.ev * 100 / 20, 1); // normaliza até 20% EV
+
+  const evColor = e.ev >= 0.10 ? 'var(--green)'
+                : e.ev >= 0.05 ? 'var(--yellow)'
+                : 'var(--orange)';
+
+  const badgeClass = {
+    total: 'badge-total', spread: 'badge-spread',
+    h2h: 'badge-h2h', player_prop: 'badge-prop'
+  }[e.tipo] || 'badge-total';
+
+  const tipoLabel = {
+    total: 'Total', spread: 'Spread', h2h: 'Moneyline', player_prop: 'Prop'
+  }[e.tipo] || e.tipo;
+
+  const valor = e.valor_sugerido || (e.kelly * 5000);
+
+  return `
+  <div class="entry-card">
+    <div class="entry-head">
+      <div class="entry-desc">${esc(e.descricao)}</div>
+      <div class="badge ${badgeClass}">${tipoLabel}</div>
+    </div>
+
+    <div class="entry-metrics">
+      <div class="metric">
+        <div class="m-label">EV</div>
+        <div class="m-val" style="color:${evColor}">+${evPct}%</div>
+      </div>
+      <div class="metric">
+        <div class="m-label">Odd</div>
+        <div class="m-val blue">${parseFloat(e.odd).toFixed(2)}</div>
+      </div>
+      <div class="metric">
+        <div class="m-label">Prob.</div>
+        <div class="m-val">${probPct}%</div>
+      </div>
+    </div>
+
+    <div class="ev-bar-wrap">
+      <span>EV</span>
+      <div class="ev-bar">
+        <div class="ev-fill" style="width:${(evBar*100).toFixed(1)}%;background:${evColor}"></div>
+      </div>
+      <span>${evPct}%</span>
+    </div>
+
+    <div class="entry-metrics">
+      <div class="metric">
+        <div class="m-label">Kelly</div>
+        <div class="m-val purple">${(e.kelly*100).toFixed(2)}%</div>
+      </div>
+      <div class="metric">
+        <div class="m-label">Média</div>
+        <div class="m-val">${e.avg != null ? e.avg : '—'}</div>
+      </div>
+      <div class="metric">
+        <div class="m-label">Linha</div>
+        <div class="m-val">${e.line != null ? e.line : '—'}</div>
+      </div>
+    </div>
+
+    ${e.detalhes ? `<div class="entry-detail">${esc(e.detalhes)}</div>` : ''}
+
+    <div class="entry-valor">
+      <span class="v-label">Valor sugerido (Kelly ${(e.kelly*100).toFixed(2)}%)</span>
+      <span class="v-amount yellow">R$ ${Math.round(valor).toLocaleString('pt-BR')}</span>
+    </div>
+  </div>`;
+}
+
+function esc(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+</script>
+</body>
+</html>
