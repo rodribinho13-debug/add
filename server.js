@@ -419,9 +419,9 @@ async function handleAPI(pathname, query, res) {
       const bankroll      = parseFloat(query.bankroll)      || 5000;
       const kellyFraction = parseFloat(query.kellyFraction) || 0.25;
 
-      // 1. Schedule de HOJE (jogos ainda não iniciados)
-      // 2. Stats dos últimos 5 dias (médias históricas dos times)
-      // 3. Odds Bet365
+      // 1. Schedule de HOJE (jogos não iniciados)
+      // 2. Stats dos últimos 5 dias (médias históricas dos times e jogadores)
+      // 3. Odds gerais Bet365/melhor bookmaker
       const [schedRes, oddsData, recentRes] = await Promise.allSettled([
         iSportsFetch('/sport/basketball/schedule/basic', { date }),
         fetchOddsWithBet365('basketball_nba'),
@@ -460,22 +460,70 @@ async function handleAPI(pathname, query, res) {
         leagueId:  String(m.leagueId || ''),
       })).filter(isNBA);
 
+      // 4. Props de jogadores — busca por evento (máx 3 jogos para economizar req)
+      // Cada jogo da The Odds API tem um ID; buscamos props separadamente
+      const propsPerGame = [];
+      const PROP_MARKETS = 'player_points,player_rebounds,player_assists,player_threes';
+      let propsCount = 0;
+      for (const game of odds.slice(0, 3)) { // máx 3 jogos (economiza quota da API)
+        if (!game.id) continue;
+        try {
+          const r = await fetchJSON(oddsURL(
+            `/v4/sports/basketball_nba/events/${game.id}/odds`,
+            { regions: 'us,eu,uk', markets: PROP_MARKETS, oddsFormat: 'decimal' }
+          ));
+          if (r.status === 200 && r.body?.bookmakers?.length) {
+            // Escolhe Bet365 ou melhor disponível
+            const books = r.body.bookmakers;
+            const chosen = books.find(b => b.key === 'bet365') ||
+              BOOK_PRIORITY.map(k => books.find(b => b.key === k)).find(Boolean) ||
+              books[0];
+            propsPerGame.push({
+              home_team: r.body.home_team || game.home_team,
+              away_team: r.body.away_team || game.away_team,
+              bookmakers: [chosen],
+            });
+            propsCount++;
+          }
+        } catch(e) { /* ignora erros individuais de props */ }
+      }
+
       const cfg = { bankroll, kellyFraction, evMin, oddMin };
+      // Combina odds gerais + props por jogo
+      const oddsWithProps = odds.map(g => {
+        const propGame = propsPerGame.find(p =>
+          (p.home_team === g.home_team && p.away_team === g.away_team) ||
+          (p.home_team === g.away_team && p.away_team === g.home_team)
+        );
+        if (!propGame) return g;
+        // Mescla mercados: adiciona mercados de props ao bookmaker existente
+        const merged = { ...g };
+        merged.bookmakers = g.bookmakers.map(bk => ({
+          ...bk,
+          markets: [
+            ...(bk.markets || []),
+            ...(propGame.bookmakers[0]?.markets || []),
+          ],
+        }));
+        return merged;
+      });
+
       const entries = await analytics.generateAllEntries(
-        { schedule, stats: recentData, odds },
+        { schedule, stats: recentData, odds: oddsWithProps },
         cfg
       );
       const filtered = entries.filter(e => e.ev >= evMin && e.odd >= oddMin);
 
-      console.log(`[bot/daily] ${date}: ${schedule.length} jogos | ${odds.length} odds | ${filtered.length} entradas`);
+      console.log(`[bot/daily] ${date}: ${schedule.length} jogos NBA | ${odds.length} odds | ${propsCount} jogos c/props | ${filtered.length} entradas`);
 
       return sendJSON(res, {
         ok: true, date,
         entries: filtered,
         total: filtered.length,
         debug: {
-          scheduleGames: schedule.length,
-          oddsGames: odds.length,
+          scheduleGames:   schedule.length,
+          oddsGames:       odds.length,
+          propsGames:      propsCount,
           historicalStats: recentData.length,
         },
         requestsUsed: reqCounter.status(),
