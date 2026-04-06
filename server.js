@@ -379,8 +379,8 @@ async function handleAPI(pathname, query, res) {
       const bankroll      = parseFloat(query.bankroll)      || 5000;
       const kellyFraction = parseFloat(query.kellyFraction) || 0.25;
 
-      // 1. Schedule de HOJE via schedule/basic (jogos ainda não iniciados, status 0/-1)
-      // 2. Stats dos últimos 5 dias via stats (médias históricas dos times)
+      // 1. Schedule de HOJE (jogos ainda não iniciados)
+      // 2. Stats dos últimos 5 dias (médias históricas dos times)
       // 3. Odds Bet365
       const [schedRes, oddsData, recentRes] = await Promise.allSettled([
         iSportsFetch('/sport/basketball/schedule/basic', { date }),
@@ -405,7 +405,7 @@ async function handleAPI(pathname, query, res) {
       const odds       = oddsData.status  === 'fulfilled' ? oddsData.value : [];
       const recentData = recentRes.status === 'fulfilled' ? recentRes.value : [];
 
-      // Monta schedule com jogos NBA (status -1 ou 0 = não iniciados)
+      // Monta schedule apenas com jogos NBA (status -1 ou 0 = não iniciados)
       const schedule = schedData.map(m => ({
         matchId:   String(m.matchId || m.id || ''),
         homeId:    String(m.homeTeamId || m.homeId || ''),
@@ -488,8 +488,14 @@ async function requestHandler(req, res) {
 
   fs.readFile(filePath, (err, data) => {
     if (err) {
-      res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
-      return res.end(JSON.stringify({ ok: true, service: 'NBA Analytics API', endpoints: ['/api/analysis','/api/odds','/api/schedule','/api/stats','/api/bot/daily','/api/recent-stats','/api/request-status'] }));
+      // Fallback: serve index.html para qualquer rota desconhecida (SPA)
+      const idx = path.join(__dirname, 'index.html');
+      fs.readFile(idx, (e2, html) => {
+        if (e2) { res.writeHead(404, CORS_HEADERS); return res.end('Not found'); }
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', ...CORS_HEADERS });
+        res.end(html);
+      });
+      return;
     }
     const ext = path.extname(filePath);
     res.writeHead(200, { 'Content-Type': MIME[ext] || 'text/plain', ...CORS_HEADERS });

@@ -1,198 +1,230 @@
-// bot.js - Com fallback mock para quando API atinge limite
-const fs = require('fs');
+/**
+ * bot.js — Gerador de Palpites NBA
+ *
+ * Uso:
+ *   node bot.js [YYYY-MM-DD]
+ *
+ * Gera relatório com as melhores apostas do dia baseado em:
+ *   - Modelo estatístico (distribuição normal)
+ *   - Expected Value (EV) > evMin
+ *   - Critério de Kelly fracionado
+ *   - Odds exclusivamente da Bet365
+ */
+
+'use strict';
+
+const fs   = require('fs');
 const path = require('path');
+const http = require('http');
 const { generateAllEntries } = require('./analytics.js');
 
+// ─── Configuração ─────────────────────────────────────────────
 const CONFIG = {
-  bankroll: 5000,
-  kellyFraction: 0.25,
-  evMin: 0.03,
-  oddMin: 1.65,
-  histDays: 10,
-  usePoisson: true,
+  bankroll:      5000,   // R$ disponível para apostas
+  kellyFraction: 0.25,   // Fração de Kelly (25% = conservador)
+  evMin:         0.03,   // EV mínimo de 3% para qualificar
+  oddMin:        1.65,   // Odd mínima Bet365
+  histDays:      5,      // Dias de histórico para médias (máx 5 para não estourar limite)
+  usePoisson:    true,
 };
 
-async function fetchFromAPI(endpoint) {
-  const http = require('http');
+// ─── HTTP helper ──────────────────────────────────────────────
+function fetchAPI(endpoint, timeoutMs = 8000) {
   return new Promise((resolve, reject) => {
     const req = http.get(`http://localhost:3000/api/${endpoint}`, res => {
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
-        try {
-          resolve(JSON.parse(data));
-        } catch (e) {
-          reject(e);
-        }
+        try { resolve(JSON.parse(data)); }
+        catch(e) { reject(new Error('JSON inválido: ' + data.slice(0, 100))); }
       });
     });
     req.on('error', reject);
-    req.setTimeout(5000, () => {
-      req.destroy();
-      reject(new Error('Timeout'));
-    });
+    req.setTimeout(timeoutMs, () => { req.destroy(); reject(new Error('Timeout')); });
   });
 }
 
-// Dados mock para quando a API não retorna dados (limite excedido)
+// ─── Dados mock (fallback quando servidor não responde) ────────
 function getMockData(date) {
   return {
     schedule: [
       {
-        matchId: 'mock1',
-        homeTeamId: '1',
-        awayTeamId: '2',
-        homeName: 'Boston Celtics',
-        awayName: 'Miami Heat',
-        homeScore: 0,
-        awayScore: 0,
-        status: 0,
-        matchTime: Math.floor(new Date(date).getTime() / 1000),
-        location: 'TD Garden',
-        leagueName: 'NBA'
+        matchId: 'mock1', homeName: 'Boston Celtics', awayName: 'Miami Heat',
+        homeScore: 0, awayScore: 0, status: -1,
+        matchTime: Math.floor(new Date(date).getTime() / 1000), leagueName: 'NBA',
       },
       {
-        matchId: 'mock2',
-        homeTeamId: '3',
-        awayTeamId: '4',
-        homeName: 'Golden State Warriors',
-        awayName: 'Los Angeles Lakers',
-        homeScore: 0,
-        awayScore: 0,
-        status: 0,
-        matchTime: Math.floor(new Date(date).getTime() / 1000),
-        location: 'Chase Center',
-        leagueName: 'NBA'
-      }
+        matchId: 'mock2', homeName: 'Golden State Warriors', awayName: 'Los Angeles Lakers',
+        homeScore: 0, awayScore: 0, status: -1,
+        matchTime: Math.floor(new Date(date).getTime() / 1000), leagueName: 'NBA',
+      },
     ],
     stats: [
-      {
-        matchId: 'mock1',
-        homeTeamName: 'Boston Celtics',
-        awayTeamName: 'Miami Heat',
-        homeScore: 112,
-        awayScore: 98,
-        homePlayers: [
-          { playerId: 'p1', playerName: 'Jayson Tatum', score: 28, attack: 2, defend: 6, assist: 5, threePointHit: 3 },
-          { playerId: 'p2', playerName: 'Jaylen Brown', score: 22, attack: 1, defend: 5, assist: 3, threePointHit: 2 }
-        ],
-        awayPlayers: [
-          { playerId: 'p3', playerName: 'Bam Adebayo', score: 24, attack: 4, defend: 10, assist: 4, threePointHit: 0 }
-        ]
-      },
-      {
-        matchId: 'mock2',
-        homeTeamName: 'Golden State Warriors',
-        awayTeamName: 'Los Angeles Lakers',
-        homeScore: 115,
-        awayScore: 110,
-        homePlayers: [
-          { playerId: 'p4', playerName: 'Stephen Curry', score: 32, attack: 0, defend: 3, assist: 6, threePointHit: 6 },
-          { playerId: 'p5', playerName: 'Klay Thompson', score: 18, attack: 1, defend: 2, assist: 2, threePointHit: 4 }
-        ],
-        awayPlayers: [
-          { playerId: 'p6', playerName: 'LeBron James', score: 25, attack: 2, defend: 7, assist: 8, threePointHit: 2 }
-        ]
-      }
+      // Dados históricos recentes simulados para construção de médias
+      { homeTeamName: 'Boston Celtics',       awayTeamName: 'New York Knicks',     homeScore: 118, awayScore: 105 },
+      { homeTeamName: 'Boston Celtics',       awayTeamName: 'Philadelphia 76ers',  homeScore: 112, awayScore: 101 },
+      { homeTeamName: 'Cleveland Cavaliers',  awayTeamName: 'Boston Celtics',      homeScore: 108, awayScore: 115 },
+      { homeTeamName: 'Miami Heat',           awayTeamName: 'Charlotte Hornets',   homeScore: 104, awayScore:  99 },
+      { homeTeamName: 'Miami Heat',           awayTeamName: 'Washington Wizards',  homeScore: 110, awayScore: 102 },
+      { homeTeamName: 'Orlando Magic',        awayTeamName: 'Miami Heat',          homeScore:  98, awayScore: 106 },
+      { homeTeamName: 'Golden State Warriors',awayTeamName: 'Sacramento Kings',    homeScore: 120, awayScore: 114 },
+      { homeTeamName: 'Golden State Warriors',awayTeamName: 'Portland Trail Blazers', homeScore: 116, awayScore: 104 },
+      { homeTeamName: 'Phoenix Suns',         awayTeamName: 'Golden State Warriors',  homeScore: 111, awayScore: 118 },
+      { homeTeamName: 'Los Angeles Lakers',   awayTeamName: 'Dallas Mavericks',    homeScore: 115, awayScore: 112 },
+      { homeTeamName: 'Los Angeles Lakers',   awayTeamName: 'San Antonio Spurs',   homeScore: 122, awayScore: 109 },
+      { homeTeamName: 'Denver Nuggets',       awayTeamName: 'Los Angeles Lakers',  homeScore: 113, awayScore: 108 },
     ],
     odds: [
       {
-        home_team: 'Boston Celtics',
-        away_team: 'Miami Heat',
-        bookmakers: [{
-          key: 'bet365',
-          markets: [
-            { key: 'totals', outcomes: [{ name: 'Over', point: 220.5 }] },
-            { key: 'spreads', outcomes: [{ name: 'Boston Celtics', point: -5.5 }] },
-            { key: 'h2h', outcomes: [{ name: 'Boston Celtics', price: 1.65 }, { name: 'Miami Heat', price: 2.30 }] }
-          ]
-        }]
+        home_team: 'Boston Celtics', away_team: 'Miami Heat',
+        bookmakers: [{ key: 'bet365', markets: [
+          { key: 'totals',  outcomes: [{ name: 'Over',  point: 218.5, price: 1.87 }, { name: 'Under', point: 218.5, price: 1.95 }] },
+          { key: 'spreads', outcomes: [{ name: 'Boston Celtics', point: -6.5, price: 1.90 }, { name: 'Miami Heat', point: 6.5, price: 1.91 }] },
+          { key: 'h2h',     outcomes: [{ name: 'Boston Celtics', price: 1.60 }, { name: 'Miami Heat', price: 2.35 }] },
+        ]}],
       },
       {
-        home_team: 'Golden State Warriors',
-        away_team: 'Los Angeles Lakers',
-        bookmakers: [{
-          key: 'bet365',
-          markets: [
-            { key: 'totals', outcomes: [{ name: 'Over', point: 228.5 }] },
-            { key: 'spreads', outcomes: [{ name: 'Golden State Warriors', point: -3.5 }] },
-            { key: 'h2h', outcomes: [{ name: 'Golden State Warriors', price: 1.75 }, { name: 'Los Angeles Lakers', price: 2.10 }] }
-          ]
-        }]
-      }
-    ]
+        home_team: 'Golden State Warriors', away_team: 'Los Angeles Lakers',
+        bookmakers: [{ key: 'bet365', markets: [
+          { key: 'totals',  outcomes: [{ name: 'Over',  point: 225.5, price: 1.92 }, { name: 'Under', point: 225.5, price: 1.89 }] },
+          { key: 'spreads', outcomes: [{ name: 'Golden State Warriors', point: -3.5, price: 1.90 }, { name: 'Los Angeles Lakers', point: 3.5, price: 1.91 }] },
+          { key: 'h2h',     outcomes: [{ name: 'Golden State Warriors', price: 1.75 }, { name: 'Los Angeles Lakers', price: 2.10 }] },
+        ]}],
+      },
+    ],
   };
 }
 
-async function fetchHistories(games, days) {
-  const teamHistories = {};
-  const playerHistories = {};
-  // Para mock, retornamos históricos vazios (o modelo usará valores padrão)
-  return { teamHistories, playerHistories };
+// ─── Busca stats históricos recentes ──────────────────────────
+async function fetchRecentStats(days = 5) {
+  try {
+    const res = await fetchAPI(`recent-stats?days=${days}`, 15000);
+    if (res.ok && Array.isArray(res.data)) return res.data;
+  } catch(e) {
+    console.warn(`⚠️  Não foi possível buscar stats históricos: ${e.message}`);
+  }
+  return [];
 }
 
+// ─── Main ──────────────────────────────────────────────────────
 async function main() {
   const date = process.argv[2] || new Date().toISOString().slice(0, 10);
-  console.log(`\n🏀 BOT NBA - Gerando palpites para ${date}\n`);
+  console.log(`\n🏀  BOT NBA — Palpites para ${date}\n`);
 
   let analysis;
   let usingMock = false;
 
+  // 1. Tenta buscar dados reais do backend
   try {
-    analysis = await fetchFromAPI(`analysis?date=${date}`);
-    if (!analysis.schedule || analysis.schedule.length === 0) {
-      console.log('⚠️ API retornou sem jogos. Usando dados mock para demonstração.');
+    analysis = await fetchAPI(`analysis?date=${date}`);
+    if (!analysis.ok || !analysis.schedule || analysis.schedule.length === 0) {
+      console.log('⚠️  API sem jogos para esta data. Usando dados mock de demonstração.');
       usingMock = true;
       analysis = getMockData(date);
     }
-  } catch (err) {
-    console.log(`⚠️ Erro ao conectar com backend (${err.message}). Usando dados mock.`);
+  } catch(err) {
+    console.log(`⚠️  Backend inacessível (${err.message}). Usando dados mock.`);
     usingMock = true;
     analysis = getMockData(date);
   }
 
-  const { schedule, stats, odds } = analysis;
+  const { schedule, stats = [], odds = [] } = analysis;
 
   if (!schedule || schedule.length === 0) {
-    console.log('❌ Nenhum jogo encontrado para esta data (nem na API nem no mock).');
+    console.log('❌ Nenhum jogo encontrado.');
     return;
   }
 
-  const { teamHistories, playerHistories } = await fetchHistories(schedule, CONFIG.histDays);
+  console.log(`📋 Jogos encontrados: ${schedule.length}`);
+  console.log(`📊 Registros de stats: ${stats.length}`);
+  console.log(`💹 Eventos com odds (Bet365): ${odds.length}\n`);
 
+  // 2. Busca stats recentes para enriquecer o modelo (apenas se real)
+  let recentStats = [];
+  if (!usingMock) {
+    recentStats = await fetchRecentStats(CONFIG.histDays);
+    if (recentStats.length > 0)
+      console.log(`📈 Stats históricos (${CONFIG.histDays} dias): ${recentStats.length} registros\n`);
+  }
+
+  // 3. Gera todas as entradas
+  const allStats = [...stats, ...recentStats];
   const entries = await generateAllEntries(
-    { schedule, stats, odds, teamHistories, playerHistories },
+    { schedule, stats: allStats, odds },
     CONFIG
   );
 
+  // 4. Filtra por EV e odd mínimos
   const valid = entries.filter(e => e.ev >= CONFIG.evMin && e.odd >= CONFIG.oddMin);
 
-  const reportLines = [];
-  reportLines.push(`📅 RELATÓRIO DE PALPITES - ${date}`);
-  reportLines.push(`💵 Bankroll: R$ ${CONFIG.bankroll} | Kelly: ${CONFIG.kellyFraction * 100}% | EV mínimo: ${CONFIG.evMin * 100}%`);
-  if (usingMock) reportLines.push(`⚠️ USANDO DADOS MOCK (limite da API atingido)`);
-  reportLines.push(`🔢 Total de entradas com valor: ${valid.length}\n`);
+  // 5. Monta relatório
+  const lines = [];
+  lines.push(`${'═'.repeat(60)}`);
+  lines.push(`🏀  PALPITES NBA — ${date}`);
+  lines.push(`${'═'.repeat(60)}`);
+  lines.push(`💵  Bankroll: R$ ${CONFIG.bankroll.toLocaleString('pt-BR')} | Kelly: ${CONFIG.kellyFraction * 100}% | EV mín: ${CONFIG.evMin * 100}%`);
+  if (usingMock) lines.push(`⚠️   ATENÇÃO: Usando dados MOCK (backend indisponível ou limite atingido)`);
+  lines.push(`🔢  Apostas qualificadas: ${valid.length} de ${entries.length} analisadas\n`);
 
   if (valid.length === 0) {
-    reportLines.push('⚠️ Nenhuma aposta qualificada encontrada para os parâmetros atuais.');
+    lines.push('⚠️  Nenhuma aposta com valor positivo encontrada para os parâmetros atuais.');
+    lines.push('    Tente reduzir evMin ou oddMin, ou aguarde jogos com melhores linhas.\n');
   } else {
-    valid.forEach((e, idx) => {
-      reportLines.push(`${idx + 1}. ${e.descricao}`);
-      reportLines.push(`   📊 Média: ${e.avg} | Linha: ${e.line} | Odd: ${e.odd}`);
-      reportLines.push(`   📈 Probabilidade modelo: ${(e.prob * 100).toFixed(1)}% | EV: +${(e.ev * 100).toFixed(2)}%`);
-      reportLines.push(`   💰 Kelly: ${(e.kelly * 100).toFixed(1)}% do bankroll → R$ ${Math.round(e.valor_sugerido)}`);
-      reportLines.push(`   ℹ️  ${e.detalhes}\n`);
-    });
+    // Agrupa por tipo para melhor leitura
+    const byType = {};
+    for (const e of valid) {
+      const t = e.tipo || 'outros';
+      if (!byType[t]) byType[t] = [];
+      byType[t].push(e);
+    }
+
+    const typeLabels = {
+      total:       '🏀 TOTAIS (Over/Under)',
+      spread:      '📐 SPREADS (Handicap)',
+      h2h:         '🥊 MONEYLINE (H2H)',
+      player_prop: '⭐ PROPS DE JOGADORES',
+      outros:      '📌 OUTROS',
+    };
+
+    let idx = 1;
+    for (const [tipo, typeEntries] of Object.entries(byType)) {
+      lines.push(`\n${typeLabels[tipo] || tipo.toUpperCase()}`);
+      lines.push('─'.repeat(50));
+      for (const e of typeEntries) {
+        lines.push(`\n${idx++}. ${e.descricao}`);
+        lines.push(`   📊 Média histórica: ${e.avg} | Linha: ${e.line} | Odd: ${e.odd}`);
+        lines.push(`   📈 Probabilidade modelo: ${(e.prob * 100).toFixed(1)}% | EV: +${(e.ev * 100).toFixed(2)}%`);
+        lines.push(`   💰 Kelly ${(e.kelly * 100).toFixed(1)}% → R$ ${Math.round(e.valor_sugerido).toLocaleString('pt-BR')}`);
+        lines.push(`   ℹ️  ${e.detalhes}`);
+      }
+    }
+
+    // Resumo financeiro
+    const totalApostas = valid.reduce((s, e) => s + e.valor_sugerido, 0);
+    lines.push(`\n${'═'.repeat(60)}`);
+    lines.push(`💼  RESUMO FINANCEIRO`);
+    lines.push(`${'─'.repeat(40)}`);
+    lines.push(`   Total sugerido para apostar: R$ ${Math.round(totalApostas).toLocaleString('pt-BR')}`);
+    lines.push(`   % do bankroll comprometido: ${((totalApostas / CONFIG.bankroll) * 100).toFixed(1)}%`);
+    lines.push(`   Melhor EV: +${(valid[0].ev * 100).toFixed(2)}% — ${valid[0].descricao}`);
   }
 
-  const output = reportLines.join('\n');
+  lines.push(`\n${'═'.repeat(60)}`);
+  lines.push(`Gerado em: ${new Date().toLocaleString('pt-BR')}`);
+  lines.push(`${'═'.repeat(60)}\n`);
+
+  const output = lines.join('\n');
   console.log(output);
 
+  // 6. Salva em arquivo
   const outDir = path.join(__dirname, 'palpites');
-  if (!fs.existsSync(outDir)) fs.mkdirSync(outDir);
+  if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
   const filename = path.join(outDir, `palpites_${date}.txt`);
-  fs.writeFileSync(filename, output);
-  console.log(`\n✅ Relatório salvo em: ${filename}`);
+  fs.writeFileSync(filename, output, 'utf8');
+  console.log(`✅  Relatório salvo em: ${filename}`);
 }
 
-main().catch(console.error);
+main().catch(err => {
+  console.error('Erro fatal no bot:', err.message);
+  process.exit(1);
+});
