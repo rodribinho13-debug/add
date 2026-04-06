@@ -16,7 +16,7 @@ const PORT = 3000;
 // ISPORTS_KEY=suachave
 // ODDS_KEY=suachave
 // Caso não exista, usa as fornecidas (mas NUNCA commite)
-require('dotenv').config();
+try { require('dotenv').config(); } catch(e) {}
 const ISPORTS_KEY   = process.env.ISPORTS_KEY   || 'dFAjm3gu69qBv2C';
 const ODDS_KEY      = process.env.ODDS_KEY      || 'b4b5039610221eb1aefe86749712cbd3';
 // =========================================================
