@@ -17,13 +17,42 @@ const PORT = 3000;
 // ODDS_KEY=suachave
 // Caso não exista, usa as fornecidas (mas NUNCA commite)
 try { require('dotenv').config(); } catch(e) {}
-const ISPORTS_KEY   = process.env.ISPORTS_KEY   || 'dFAjm3gu69qBv2C';
+const ISPORTS_KEY   = process.env.ISPORTS_KEY   || 'dFAjm3gu69q7Bv2C';
 const ODDS_KEY      = process.env.ODDS_KEY      || 'b4b5039610221eb1aefe86749712cbd3';
 // =========================================================
 
 const ISPORTS_HOST  = 'api.isportsapi.com';
 const ISPORTS_HOST2 = 'api2.isportsapi.com';
 const NBA_LEAGUE_ID = '155';
+
+// ─── Contador de requisições diárias (iSports) ───────────────
+const reqCounter = {
+  date:  '',
+  count: 0,
+  LIMIT: 180,               // margem de segurança abaixo das 200 diárias
+  _check() {
+    const today = new Date().toISOString().slice(0, 10);
+    if (today !== this.date) { this.date = today; this.count = 0; }
+  },
+  increment() {
+    this._check();
+    this.count++;
+    const pct = Math.round((this.count / this.LIMIT) * 100);
+    if (this.count >= this.LIMIT)
+      console.error(`🚨 LIMITE DE ${this.LIMIT} REQ ATINGIDO! Próxima janela: amanhã.`);
+    else if (pct >= 80)
+      console.warn(`⚠️  Uso da API iSports: ${this.count}/${this.LIMIT} (${pct}%)`);
+    return this.count;
+  },
+  canMake(n = 1) {
+    this._check();
+    return (this.count + n) <= this.LIMIT;
+  },
+  status() {
+    this._check();
+    return { used: this.count, limit: this.LIMIT, remaining: this.LIMIT - this.count, date: this.date };
+  },
+};
 
 // Cache simples (em memória)
 const cache = new Map();
@@ -98,7 +127,16 @@ async function iSportsFetch(path, params, timeoutMs=12000) {
   const cached = getCache(cacheKey, 3600);
   if (cached) return cached;
 
+  // Verifica limite diário antes de fazer requisição real
+  if (!reqCounter.canMake(1)) {
+    console.error('[iSports] Limite diário atingido — retornando cache expirado ou vazio.');
+    const old = cache.get(cacheKey);
+    if (old) return old.data; // usa cache antigo mesmo expirado
+    return { status: 429, body: null };
+  }
+
   try {
+    reqCounter.increment();
     const r = await fetchJSON(iSportsURL(ISPORTS_HOST, path, params), timeoutMs);
     if(r.status === 200 && r.body) {
       setCache(cacheKey, r);
@@ -107,6 +145,7 @@ async function iSportsFetch(path, params, timeoutMs=12000) {
     throw new Error('Status ' + r.status);
   } catch(e) {
     console.log(`[iSports] fallback api2 (${e.message})`);
+    reqCounter.increment();
     const r2 = await fetchJSON(iSportsURL(ISPORTS_HOST2, path, params), timeoutMs);
     if(r2.status === 200 && r2.body) setCache(cacheKey, r2);
     return r2;
@@ -305,15 +344,92 @@ async function handleAPI(pathname, query, res) {
       });
     }
 
-    // 🆕 NOVO ENDPOINT /api/bot/daily – já retorna entradas calculadas
+    // /api/recent-stats — stats dos últimos N dias (máx 7, cuida do limite de 200 req)
+    if (pathname === '/api/recent-stats') {
+      const days = Math.min(parseInt(query.days) || 5, 7);
+      const combined = [];
+      const today = new Date();
+      for (let i = 1; i <= days; i++) {
+        const d = new Date(today);
+        d.setDate(today.getDate() - i);
+        const dateStr = d.toISOString().slice(0, 10);
+        if (!reqCounter.canMake(1)) {
+          console.warn(`[recent-stats] Limite próximo — parando em ${i-1} dias`);
+          break;
+        }
+        try {
+          const r = await iSportsFetch('/sport/basketball/stats', { date: dateStr }, 8000);
+          combined.push(...extractList(r.body));
+        } catch(e) { console.warn(`[recent-stats] ${dateStr}: ${e.message}`); }
+      }
+      return sendJSON(res, { ok: true, data: combined, days });
+    }
+
+    // /api/request-status — mostra uso do limite diário da iSports
+    if (pathname === '/api/request-status') {
+      return sendJSON(res, { ok: true, ...reqCounter.status() });
+    }
+
+    // /api/bot/daily — retorna entradas calculadas pelo analytics engine
     if (pathname === '/api/bot/daily') {
       const date = query.date || new Date().toISOString().slice(0,10);
-      // Importa dinamicamente o módulo de análise (evita duplicação de código)
       const analytics = require('./analytics.js');
-      const analysisData = await analytics.prepareAnalysisData(date, this); // passa referência para fetch
-      const entries = analytics.generateAllEntries(analysisData);
-      const filtered = entries.filter(e => e.ev > (parseFloat(query.minEV) || 0.03) && e.odd >= (parseFloat(query.minOdd) || 1.65));
-      return sendJSON(res, { ok: true, date, entries: filtered });
+      const evMin         = parseFloat(query.minEV)         || 0.03;
+      const oddMin        = parseFloat(query.minOdd)        || 1.65;
+      const bankroll      = parseFloat(query.bankroll)      || 5000;
+      const kellyFraction = parseFloat(query.kellyFraction) || 0.25;
+
+      // Busca dados do dia + stats dos últimos 3 dias para melhorar médias
+      const [statsRes, oddsData, recentRes] = await Promise.allSettled([
+        iSportsFetch('/sport/basketball/stats', { date }),
+        fetchOddsWithBet365('basketball_nba'),
+        (async () => {
+          const arr = [];
+          for (let i = 1; i <= 3; i++) {
+            const d = new Date(date);
+            d.setDate(d.getDate() - i);
+            const ds = d.toISOString().slice(0, 10);
+            if (!reqCounter.canMake(1)) break;
+            try {
+              const r = await iSportsFetch('/sport/basketball/stats', { date: ds }, 8000);
+              arr.push(...extractList(r.body));
+            } catch(e) {}
+          }
+          return arr;
+        })(),
+      ]);
+
+      const statsData  = statsRes.status  === 'fulfilled' ? extractList(statsRes.value.body) : [];
+      const odds       = oddsData.status  === 'fulfilled' ? oddsData.value : [];
+      const recentData = recentRes.status === 'fulfilled' ? recentRes.value : [];
+
+      const schedule = statsData.map(m => ({
+        matchId:   String(m.matchId || m.id || ''),
+        homeId:    String(m.homeTeamId || m.homeId || ''),
+        awayId:    String(m.awayTeamId || m.awayId || ''),
+        homeName:  m.homeTeamName || m.homeName || 'Time A',
+        awayName:  m.awayTeamName || m.awayName || 'Time B',
+        homeScore: m.homeScore,
+        awayScore: m.awayScore,
+        status:    m.status != null ? m.status : -1,
+        leagueName: m.leagueName || 'NBA',
+        leagueId:  String(m.leagueId || ''),
+      })).filter(isNBA);
+
+      const cfg = { bankroll, kellyFraction, evMin, oddMin };
+      const allStats = [...statsData, ...recentData];
+      const entries = await analytics.generateAllEntries(
+        { schedule, stats: allStats, odds },
+        cfg
+      );
+      const filtered = entries.filter(e => e.ev >= evMin && e.odd >= oddMin);
+
+      return sendJSON(res, {
+        ok: true, date,
+        entries: filtered,
+        total: filtered.length,
+        requestsUsed: reqCounter.status(),
+      });
     }
 
     // /api/debug (mantido)
@@ -331,7 +447,7 @@ async function handleAPI(pathname, query, res) {
           };
         } catch(e) { results[`stats_${date}`] = { error: e.message }; }
       }
-      return sendJSON(res, { ok: true, results });
+      return sendJSON(res, { ok: true, results, requestStatus: reqCounter.status() });
     }
 
     sendJSON(res, { ok: false, error: 'Route not found: ' + pathname }, 404);
@@ -341,24 +457,46 @@ async function handleAPI(pathname, query, res) {
   }
 }
 
-// ─── Servidor estático + API ──────────────────────────────
 // ─── Handler principal (local + Vercel) ───────────────────
 async function requestHandler(req, res) {
   const parsed   = url.parse(req.url, true);
   const pathname = parsed.pathname;
-  console.log(`[${new Date().toLocaleTimeString()}] ${req.method} ${pathname}`);
-  if (req.method === 'OPTIONS') { res.writeHead(204, CORS_HEADERS); return res.end(); }
-  if (pathname.startsWith('/api/')) return handleAPI(pathname, parsed.query, res);
-  res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
-  res.end(JSON.stringify({ ok: true, service: 'NBA Analytics API', endpoints: ['/api/analysis','/api/odds','/api/schedule','/api/stats','/api/bot/daily'] }));
-}
 
-// Local: inicia servidor HTTP
-if (require.main === module) {
-  http.createServer(requestHandler).listen(PORT, '0.0.0.0', () => {
-    console.log(`\n  🏀 NBA Analytics System em http://localhost:${PORT}\n`);
+  console.log(`[${new Date().toLocaleTimeString()}] ${req.method} ${pathname}`);
+
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, CORS_HEADERS);
+    return res.end();
+  }
+
+  if (pathname.startsWith('/api/')) {
+    return handleAPI(pathname, parsed.query, res);
+  }
+
+  let filePath = pathname === '/' ? '/index.html' : pathname;
+  filePath = path.join(__dirname, filePath);
+
+  fs.readFile(filePath, (err, data) => {
+    if (err) {
+      res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
+      return res.end(JSON.stringify({ ok: true, service: 'NBA Analytics API', endpoints: ['/api/analysis','/api/odds','/api/schedule','/api/stats','/api/bot/daily','/api/recent-stats','/api/request-status'] }));
+    }
+    const ext = path.extname(filePath);
+    res.writeHead(200, { 'Content-Type': MIME[ext] || 'text/plain', ...CORS_HEADERS });
+    res.end(data);
   });
 }
 
-// Vercel: exporta handler
+// ─── Modo local: inicia o servidor HTTP ───────────────────
+if (require.main === module) {
+  const server = require('http').createServer(requestHandler);
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`\n  🏀 NBA Analytics System rodando em http://localhost:${PORT}`);
+    console.log('  ✅ Cache ativo (1h para iSports, 30min para odds)');
+    console.log('  ✅ Odds filtradas exclusivamente pela Bet365');
+    console.log('  ✅ Contador de requisições ativo (limite: 180/200 por dia)\n');
+  });
+}
+
+// ─── Exporta handler para Vercel (serverless) ─────────────
 module.exports = requestHandler;
