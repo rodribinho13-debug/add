@@ -465,6 +465,78 @@ function _addEntry(list, entry, config) {
 // 13. FUNÇÃO PRINCIPAL — generateAllEntries
 // ─────────────────────────────────────────────
 
+// ─────────────────────────────────────────────
+// 13a. ODDS ESTIMADAS (fallback quando The Odds API não retorna)
+// ─────────────────────────────────────────────
+
+/**
+ * Constrói um objeto de odds sintéticas baseado nas médias dos times.
+ * Usa margem de 5% (como uma casa de apostas real).
+ */
+function buildEstimatedOdds(game, teamMap) {
+  const homeName = game.homeName || game.homeTeamName || '';
+  const awayName = game.awayName || game.awayTeamName || '';
+
+  const homeAvg     = avgFor(teamMap, homeName)      ?? (NBA.teamAvg + NBA.homeCourt / 2);
+  const awayAvg     = avgFor(teamMap, awayName)      ?? (NBA.teamAvg - NBA.homeCourt / 2);
+  const homeAgainst = avgAgainst(teamMap, homeName)  ?? NBA.teamAvg;
+  const awayAgainst = avgAgainst(teamMap, awayName)  ?? NBA.teamAvg;
+
+  const expHome  = (homeAvg + awayAgainst) / 2;
+  const expAway  = (awayAvg + homeAgainst) / 2;
+  const expTotal = expHome + expAway;
+
+  const margin   = expHome - expAway + NBA.homeCourt;
+  const pHome    = probOver(0, margin, NBA.spreadSigma);
+  const pAway    = 1 - pHome;
+  const JUICE    = 1.05; // margem da casa de 5%
+
+  // Odd decimal = 1 / (prob * JUICE)
+  const odHome  = Math.max(1.1, 1 / (pHome * JUICE));
+  const odAway  = Math.max(1.1, 1 / (pAway * JUICE));
+
+  // Spread típico (arredondado para 0.5)
+  const spread   = Math.round(margin * 2) / 2;
+  const odSpread = 1 / (0.5 * JUICE); // ~1.905
+
+  // Total arredondado para 0.5
+  const totalLine = Math.round(expTotal * 2) / 2;
+  const odTotal   = 1 / (0.5 * JUICE);
+
+  return {
+    home_team: homeName,
+    away_team: awayName,
+    _estimated: true,
+    bookmakers: [{
+      key: 'estimated',
+      title: 'Odds Estimadas',
+      markets: [
+        {
+          key: 'h2h',
+          outcomes: [
+            { name: homeName, price: parseFloat(odHome.toFixed(3)) },
+            { name: awayName, price: parseFloat(odAway.toFixed(3)) },
+          ],
+        },
+        {
+          key: 'totals',
+          outcomes: [
+            { name: 'Over',  point: totalLine, price: parseFloat(odTotal.toFixed(3)) },
+            { name: 'Under', point: totalLine, price: parseFloat(odTotal.toFixed(3)) },
+          ],
+        },
+        {
+          key: 'spreads',
+          outcomes: [
+            { name: homeName, point: -spread,  price: parseFloat(odSpread.toFixed(3)) },
+            { name: awayName, point:  spread,  price: parseFloat(odSpread.toFixed(3)) },
+          ],
+        },
+      ],
+    }],
+  };
+}
+
 /**
  * Gera todas as entradas de apostas com valor positivo.
  *
@@ -503,10 +575,13 @@ async function generateAllEntries(data, config) {
 
     const gameOdds = findGameOdds(odds, homeName, awayName);
 
-    all.push(...analyzeTotals(game, teamMap, gameOdds, config));
-    all.push(...analyzeSpreads(game, teamMap, gameOdds, config));
-    all.push(...analyzeH2H(game, teamMap, gameOdds, config));
-    all.push(...analyzePlayerProps(gameOdds, playerMap, config));
+    // Se não há odds externas, gera odds estimadas com margem de 5%
+    const effectiveOdds = gameOdds || buildEstimatedOdds(game, teamMap);
+
+    all.push(...analyzeTotals(game, teamMap, effectiveOdds, config));
+    all.push(...analyzeSpreads(game, teamMap, effectiveOdds, config));
+    all.push(...analyzeH2H(game, teamMap, effectiveOdds, config));
+    all.push(...analyzePlayerProps(effectiveOdds, playerMap, config));
   }
 
   // Ordena por EV decrescente → os melhores palpites primeiro

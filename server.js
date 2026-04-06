@@ -159,25 +159,34 @@ function oddsURL(path, params) {
   return `https://api.the-odds-api.com${path}?${qs}`;
 }
 
-async function fetchOddsWithBet365(sport = 'basketball_nba', regions = 'us', markets = 'h2h,totals,spreads') {
-  const cacheKey = `odds_${sport}_${regions}_${markets}`;
+// Prioridade de bookmakers (melhores odds para o apostador)
+const BOOK_PRIORITY = ['bet365','draftkings','fanduel','betmgm','betrivers','unibet','pinnacle','williamhill'];
+
+async function fetchOddsWithBet365(sport = 'basketball_nba', regions = 'us,eu,uk', markets = 'h2h,totals,spreads') {
+  const cacheKey = `odds_${sport}_${markets}`;
   const cached = getCache(cacheKey, 1800); // 30 min
   if (cached) return cached;
 
   const r = await fetchJSON(oddsURL(`/v4/sports/${sport}/odds`, { regions, markets, oddsFormat: 'decimal' }));
-  if (r.status !== 200 || !r.body) return [];
+  if (r.status !== 200 || !Array.isArray(r.body)) return [];
 
-  // Filtra apenas bookmaker = 'bet365'
-  const filtered = r.body
+  // Para cada jogo: prefere Bet365, senão usa o melhor bookmaker disponível
+  const result = r.body
     .map(game => {
-      const bet365 = game.bookmakers?.find(b => b.key === 'bet365');
-      if (!bet365) return null;
-      return { ...game, bookmakers: [bet365] };
+      const books = game.bookmakers || [];
+      if (!books.length) return null;
+      // Escolhe Bet365 se disponível, senão o primeiro da lista de prioridade, senão qualquer um
+      const chosen =
+        books.find(b => b.key === 'bet365') ||
+        BOOK_PRIORITY.map(k => books.find(b => b.key === k)).find(Boolean) ||
+        books[0];
+      return { ...game, bookmakers: [chosen], _bookmaker: chosen.key };
     })
     .filter(Boolean);
-  
-  setCache(cacheKey, filtered);
-  return filtered;
+
+  setCache(cacheKey, result);
+  console.log(`[odds] ${result.length} jogos com odds (regiões: us,eu,uk)`);
+  return result;
 }
 
 // ─── Helpers ──────────────────────────────────────────────
