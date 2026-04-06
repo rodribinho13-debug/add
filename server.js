@@ -368,8 +368,20 @@ const server = http.createServer(async (req, res) => {
   });
 });
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`\n  🏀 NBA Analytics System rodando em http://localhost:${PORT}`);
-  console.log('  ✅ Cache ativo (1h para iSports, 30min para odds)');
-  console.log('  ✅ Odds filtradas exclusivamente pela Bet365\n');
-});
+// ─── Vercel: exporta handler + local: inicia servidor ────────
+async function requestHandler(req, res) {
+  const parsed   = url.parse(req.url, true);
+  const pathname = parsed.pathname;
+  if (req.method === 'OPTIONS') { res.writeHead(204, CORS_HEADERS); return res.end(); }
+  if (pathname.startsWith('/api/')) return handleAPI(pathname, parsed.query, res);
+  res.writeHead(200, CORS_HEADERS);
+  res.end(JSON.stringify({ ok: true, service: 'NBA Analytics API', endpoints: ['/api/analysis','/api/odds','/api/schedule','/api/stats','/api/bot/daily'] }));
+}
+
+if (require.main === module) {
+  http.createServer(requestHandler).listen(PORT, '0.0.0.0', () => {
+    console.log(`🏀 Rodando em http://localhost:${PORT}`);
+  });
+}
+
+module.exports = requestHandler;
