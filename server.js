@@ -342,46 +342,23 @@ async function handleAPI(pathname, query, res) {
 }
 
 // ─── Servidor estático + API ──────────────────────────────
-const server = http.createServer(async (req, res) => {
-  const parsed   = url.parse(req.url, true);
-  const pathname = parsed.pathname;
-
-  console.log(`[${new Date().toLocaleTimeString()}] ${req.method} ${pathname}`);
-
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204, CORS_HEADERS);
-    return res.end();
-  }
-
-  if (pathname.startsWith('/api/')) {
-    return handleAPI(pathname, parsed.query, res);
-  }
-
-  let filePath = pathname === '/' ? '/index.html' : pathname;
-  filePath = path.join(__dirname, filePath);
-
-  fs.readFile(filePath, (err, data) => {
-    if (err) { res.writeHead(404, CORS_HEADERS); return res.end('Not found'); }
-    const ext = path.extname(filePath);
-    res.writeHead(200, { 'Content-Type': MIME[ext] || 'text/plain', ...CORS_HEADERS });
-    res.end(data);
-  });
-});
-
-// ─── Vercel: exporta handler + local: inicia servidor ────────
+// ─── Handler principal (local + Vercel) ───────────────────
 async function requestHandler(req, res) {
   const parsed   = url.parse(req.url, true);
   const pathname = parsed.pathname;
+  console.log(`[${new Date().toLocaleTimeString()}] ${req.method} ${pathname}`);
   if (req.method === 'OPTIONS') { res.writeHead(204, CORS_HEADERS); return res.end(); }
   if (pathname.startsWith('/api/')) return handleAPI(pathname, parsed.query, res);
-  res.writeHead(200, CORS_HEADERS);
+  res.writeHead(200, { 'Content-Type': 'application/json', ...CORS_HEADERS });
   res.end(JSON.stringify({ ok: true, service: 'NBA Analytics API', endpoints: ['/api/analysis','/api/odds','/api/schedule','/api/stats','/api/bot/daily'] }));
 }
 
+// Local: inicia servidor HTTP
 if (require.main === module) {
   http.createServer(requestHandler).listen(PORT, '0.0.0.0', () => {
-    console.log(`🏀 Rodando em http://localhost:${PORT}`);
+    console.log(`\n  🏀 NBA Analytics System em http://localhost:${PORT}\n`);
   });
 }
 
+// Vercel: exporta handler
 module.exports = requestHandler;
