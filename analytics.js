@@ -309,7 +309,8 @@ function analyzeSpreads(game, teamMap, gameOdds, config) {
 
   _addEntry(entries, {
     tipo: 'spread',
-    descricao: `${homeName} ${spread > 0 ? '+' : ''}${spread} (Spread)`,
+    descricao: `${homeName} vs ${awayName} — ${homeName} ${spread > 0 ? '+' : ''}${spread}`,
+    homeTeam: homeName, awayTeam: awayName,
     avg: expectedMargin.toFixed(1), line: spread, odd: homeOdd,
     prob: pHomeCover, ev: calcEV(pHomeCover, homeOdd),
     kelly: calcKelly(pHomeCover, homeOdd, config.kellyFraction),
@@ -319,7 +320,8 @@ function analyzeSpreads(game, teamMap, gameOdds, config) {
   const awaySpread = -(spread);
   _addEntry(entries, {
     tipo: 'spread',
-    descricao: `${awayName} +${awaySpread} (Spread)`,
+    descricao: `${homeName} vs ${awayName} — ${awayName} ${awaySpread > 0 ? '+' : ''}${awaySpread}`,
+    homeTeam: homeName, awayTeam: awayName,
     avg: (-expectedMargin).toFixed(1), line: awaySpread, odd: awayOdd,
     prob: pAwayCover, ev: calcEV(pAwayCover, awayOdd),
     kelly: calcKelly(pAwayCover, awayOdd, config.kellyFraction),
@@ -366,7 +368,8 @@ function analyzeH2H(game, teamMap, gameOdds, config) {
 
   _addEntry(entries, {
     tipo: 'h2h',
-    descricao: `${homeName} vence (Moneyline)`,
+    descricao: `${homeName} vs ${awayName} — ${homeName} vence`,
+    homeTeam: homeName, awayTeam: awayName,
     avg: expectedMargin.toFixed(1), line: 0, odd: homeOdd,
     prob: pHome, ev: calcEV(pHome, homeOdd),
     kelly: calcKelly(pHome, homeOdd, config.kellyFraction),
@@ -375,7 +378,8 @@ function analyzeH2H(game, teamMap, gameOdds, config) {
 
   _addEntry(entries, {
     tipo: 'h2h',
-    descricao: `${awayName} vence (Moneyline)`,
+    descricao: `${homeName} vs ${awayName} — ${awayName} vence`,
+    homeTeam: homeName, awayTeam: awayName,
     avg: (-expectedMargin).toFixed(1), line: 0, odd: awayOdd,
     prob: pAway, ev: calcEV(pAway, awayOdd),
     kelly: calcKelly(pAway, awayOdd, config.kellyFraction),
@@ -477,39 +481,42 @@ function buildEstimatedOdds(game, teamMap) {
   const homeName = game.homeName || game.homeTeamName || '';
   const awayName = game.awayName || game.awayTeamName || '';
 
-  const homeAvg     = avgFor(teamMap, homeName)      ?? (NBA.teamAvg + NBA.homeCourt / 2);
-  const awayAvg     = avgFor(teamMap, awayName)      ?? (NBA.teamAvg - NBA.homeCourt / 2);
-  const homeAgainst = avgAgainst(teamMap, homeName)  ?? NBA.teamAvg;
-  const awayAgainst = avgAgainst(teamMap, awayName)  ?? NBA.teamAvg;
+  // Usa EXACTAMENTE as mesmas médias que analyzeH2H/analyzeTotals/analyzeSpreads
+  // para garantir consistência: EV resultante ≈ -5% (margem da casa), nunca positivo artificialmente
+  const homeAvg     = avgFor(teamMap, homeName)     ?? (NBA.teamAvg + NBA.homeCourt / 2);
+  const awayAvg     = avgFor(teamMap, awayName)     ?? (NBA.teamAvg - NBA.homeCourt / 2);
+  const homeAgainst = avgAgainst(teamMap, homeName) ?? NBA.teamAvg;
+  const awayAgainst = avgAgainst(teamMap, awayName) ?? NBA.teamAvg;
 
-  const expHome  = (homeAvg + awayAgainst) / 2;
-  const expAway  = (awayAvg + homeAgainst) / 2;
-  const expTotal = expHome + expAway;
+  // Mesma fórmula de margem que analyzeH2H
+  const expectedMargin = ((homeAvg - awayAgainst) + (awayAvg - homeAgainst)) / 2 + NBA.homeCourt;
+  // Mesma fórmula de total que analyzeTotals
+  const expectedHome  = (homeAvg + awayAgainst) / 2;
+  const expectedAway  = (awayAvg + homeAgainst) / 2;
+  const expectedTotal = expectedHome + expectedAway;
 
-  const margin   = expHome - expAway + NBA.homeCourt;
-  const pHome    = probOver(0, margin, NBA.spreadSigma);
-  const pAway    = 1 - pHome;
-  const JUICE    = 1.05; // margem da casa de 5%
+  const pHome = probOver(0, expectedMargin, NBA.spreadSigma);
+  const pAway = 1 - pHome;
+  const JUICE = 1.05; // margem de 5% da casa
 
-  // Odd decimal = 1 / (prob * JUICE)
-  const odHome  = Math.max(1.1, 1 / (pHome * JUICE));
-  const odAway  = Math.max(1.1, 1 / (pAway * JUICE));
+  // Odd derivada da NOSSA própria probabilidade → EV sempre ≈ -5%
+  // Isso garante que só entradas com odds reais de mercado terão EV positivo
+  const odHome   = Math.max(1.1, 1 / (pHome * JUICE));
+  const odAway   = Math.max(1.1, 1 / (pAway * JUICE));
+  const odOver   = Math.max(1.1, 1 / (0.5   * JUICE)); // ~1.905
+  const odUnder  = odOver;
+  const odSpread = odOver;
 
-  // Spread típico (arredondado para 0.5)
-  const spread   = Math.round(margin * 2) / 2;
-  const odSpread = 1 / (0.5 * JUICE); // ~1.905
-
-  // Total arredondado para 0.5
-  const totalLine = Math.round(expTotal * 2) / 2;
-  const odTotal   = 1 / (0.5 * JUICE);
+  const spread    = Math.round(expectedMargin * 2) / 2;
+  const totalLine = Math.round(expectedTotal  * 2) / 2;
 
   return {
-    home_team: homeName,
-    away_team: awayName,
+    home_team:  homeName,
+    away_team:  awayName,
     _estimated: true,
     bookmakers: [{
       key: 'estimated',
-      title: 'Odds Estimadas',
+      title: 'Odds Estimadas (sem mercado disponível)',
       markets: [
         {
           key: 'h2h',
@@ -521,15 +528,15 @@ function buildEstimatedOdds(game, teamMap) {
         {
           key: 'totals',
           outcomes: [
-            { name: 'Over',  point: totalLine, price: parseFloat(odTotal.toFixed(3)) },
-            { name: 'Under', point: totalLine, price: parseFloat(odTotal.toFixed(3)) },
+            { name: 'Over',  point: totalLine, price: parseFloat(odOver.toFixed(3))  },
+            { name: 'Under', point: totalLine, price: parseFloat(odUnder.toFixed(3)) },
           ],
         },
         {
           key: 'spreads',
           outcomes: [
-            { name: homeName, point: -spread,  price: parseFloat(odSpread.toFixed(3)) },
-            { name: awayName, point:  spread,  price: parseFloat(odSpread.toFixed(3)) },
+            { name: homeName, point: -spread, price: parseFloat(odSpread.toFixed(3)) },
+            { name: awayName, point:  spread, price: parseFloat(odSpread.toFixed(3)) },
           ],
         },
       ],
@@ -574,14 +581,19 @@ async function generateAllEntries(data, config) {
     if (!homeName || !awayName) continue;
 
     const gameOdds = findGameOdds(odds, homeName, awayName);
+    const isEstimated = !gameOdds;
 
     // Se não há odds externas, gera odds estimadas com margem de 5%
     const effectiveOdds = gameOdds || buildEstimatedOdds(game, teamMap);
+    const bookmakerName = effectiveOdds?.bookmakers?.[0]?.title || effectiveOdds?.bookmakers?.[0]?.key || '';
 
-    all.push(...analyzeTotals(game, teamMap, effectiveOdds, config));
-    all.push(...analyzeSpreads(game, teamMap, effectiveOdds, config));
-    all.push(...analyzeH2H(game, teamMap, effectiveOdds, config));
-    all.push(...analyzePlayerProps(effectiveOdds, playerMap, config));
+    const tag = { bookmaker: bookmakerName, estimated: isEstimated };
+    const addTag = arr => arr.map(e => ({ ...e, ...tag }));
+
+    all.push(...addTag(analyzeTotals(game, teamMap, effectiveOdds, config)));
+    all.push(...addTag(analyzeSpreads(game, teamMap, effectiveOdds, config)));
+    all.push(...addTag(analyzeH2H(game, teamMap, effectiveOdds, config)));
+    all.push(...addTag(analyzePlayerProps(effectiveOdds, playerMap, config)));
   }
 
   // Ordena por EV decrescente → os melhores palpites primeiro

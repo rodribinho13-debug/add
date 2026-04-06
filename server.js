@@ -208,13 +208,44 @@ function extractList(body) {
   return [];
 }
 
+// ─── Whitelist dos 30 times da NBA ────────────────────────
+const NBA_TEAM_KEYWORDS = new Set([
+  'hawks','celtics','nets','hornets','bulls','cavaliers','cavs',
+  'mavericks','mavs','nuggets','pistons','warriors','rockets','pacers',
+  'clippers','lakers','grizzlies','heat','bucks','timberwolves','wolves',
+  'pelicans','knicks','thunder','magic','76ers','sixers','suns',
+  'blazers','kings','spurs','raptors','jazz','wizards',
+]);
+const NBA_TEAM_FULL = new Set([
+  'atlanta hawks','boston celtics','brooklyn nets','charlotte hornets',
+  'chicago bulls','cleveland cavaliers','dallas mavericks','denver nuggets',
+  'detroit pistons','golden state warriors','houston rockets','indiana pacers',
+  'la clippers','los angeles clippers','los angeles lakers','memphis grizzlies',
+  'miami heat','milwaukee bucks','minnesota timberwolves','new orleans pelicans',
+  'new york knicks','oklahoma city thunder','orlando magic','philadelphia 76ers',
+  'phoenix suns','portland trail blazers','sacramento kings','san antonio spurs',
+  'toronto raptors','utah jazz','washington wizards',
+]);
+function isNBATeam(name) {
+  if (!name) return false;
+  const n = name.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+  if (NBA_TEAM_FULL.has(n)) return true;
+  const last = n.split(' ').pop();
+  return last.length > 3 && NBA_TEAM_KEYWORDS.has(last);
+}
+
 function isNBA(m) {
-  const name = (m.leagueName || m.league_name || '').toLowerCase().trim();
-  const lid  = String(m.leagueId || m.league_id || '');
-  return lid === NBA_LEAGUE_ID
-    || name === 'nba'
-    || name.includes('national basketball association')
-    || name.startsWith('nba');
+  const lgName = (m.leagueName || m.league_name || '').toLowerCase().trim();
+  const lid    = String(m.leagueId || m.league_id || '');
+
+  // 1. Verifica pela liga
+  if (lid === NBA_LEAGUE_ID || lgName === 'nba' || lgName.includes('national basketball association')) {
+    return true;
+  }
+  // 2. Verifica se AMBOS os times são da NBA (lida com liga sem label)
+  const home = m.homeTeamName || m.homeName || '';
+  const away = m.awayTeamName || m.awayName || '';
+  return isNBATeam(home) && isNBATeam(away);
 }
 
 // ========== NOVA LÓGICA DE ANÁLISE (reutilizada pelo bot) ==========
@@ -449,6 +480,30 @@ async function handleAPI(pathname, query, res) {
         },
         requestsUsed: reqCounter.status(),
       });
+    }
+
+    // /api/debug-odds — diagnóstico da The Odds API
+    if (pathname === '/api/debug-odds') {
+      const sport = query.sport || 'basketball_nba';
+      try {
+        const r = await fetchJSON(oddsURL(`/v4/sports/${sport}/odds`, {
+          regions: 'us,eu,uk', markets: 'h2h,totals,spreads', oddsFormat: 'decimal',
+        }));
+        const games   = Array.isArray(r.body) ? r.body : [];
+        const books   = [...new Set(games.flatMap(g => (g.bookmakers||[]).map(b => b.key)))];
+        const hasBet365 = books.includes('bet365');
+        return sendJSON(res, {
+          ok: true,
+          httpStatus: r.status,
+          totalGames: games.length,
+          bookmakers: books,
+          hasBet365,
+          firstGame: games[0] ? { home: games[0].home_team, away: games[0].away_team, books: games[0].bookmakers?.map(b=>b.key) } : null,
+          raw: r.body === null ? r.raw : undefined,
+        });
+      } catch(e) {
+        return sendJSON(res, { ok: false, error: e.message }, 500);
+      }
     }
 
     // /api/debug (mantido)

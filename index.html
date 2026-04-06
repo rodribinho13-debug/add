@@ -465,13 +465,17 @@ function entryCard(e) {
   }[e.tipo] || e.tipo;
 
   const valor = e.valor_sugerido || (e.kelly * 5000);
+  const bookLabel = e.bookmaker ? `<span style="font-size:10px;color:var(--muted);margin-left:6px">${esc(e.bookmaker)}</span>` : '';
+  const estimatedWarning = e.estimated ? `<div style="background:#2a1a00;border:1px solid #fb850033;border-radius:6px;padding:6px 10px;font-size:11px;color:var(--orange)">⚠️ Odds estimadas (sem bookmaker disponível) — use para análise apenas</div>` : '';
 
   return `
   <div class="entry-card">
     <div class="entry-head">
-      <div class="entry-desc">${esc(e.descricao)}</div>
+      <div class="entry-desc">${esc(e.descricao)}${bookLabel}</div>
       <div class="badge ${badgeClass}">${tipoLabel}</div>
     </div>
+
+    ${estimatedWarning}
 
     <div class="entry-metrics">
       <div class="metric">
