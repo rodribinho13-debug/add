@@ -128,6 +128,16 @@
     .badge-h2h      { background: #1a3a28; color: var(--green); }
     .badge-prop     { background: #3a2a10; color: var(--yellow); }
 
+    .conf-badge {
+      font-size: 9px; font-weight: 700; padding: 2px 6px; border-radius: 20px;
+      text-transform: uppercase; letter-spacing: .05em; white-space: nowrap;
+    }
+    .conf-alto   { background: #0d3a1a; color: var(--green); border: 1px solid var(--green); }
+    .conf-medio  { background: #2a2a08; color: var(--yellow); border: 1px solid var(--yellow); }
+    .conf-baixo  { background: #2a1a0a; color: var(--orange); border: 1px solid var(--orange); }
+
+    .entry-tags { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
     .entry-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
     .metric { background: var(--bg); border-radius: 6px; padding: 8px 10px; text-align: center; }
     .metric .m-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
@@ -206,7 +216,7 @@
       <div class="field">
         <label>EV mínimo (%)</label>
         <div class="slider-wrap">
-          <input type="range" id="sl-ev" min="0" max="30" step="0.5" value="3" />
+          <input type="range" id="sl-ev" min="0" max="30" step="0.5" value="5" />
           <span class="slider-val" id="sl-ev-val">3.0%</span>
         </div>
         <span class="hint">Expected Value mínimo para exibir a entrada</span>
@@ -215,17 +225,43 @@
       <div class="field">
         <label>Odd mínima</label>
         <div class="slider-wrap">
-          <input type="range" id="sl-odd" min="1.1" max="5" step="0.05" value="1.65" />
-          <span class="slider-val" id="sl-odd-val">1.65</span>
+          <input type="range" id="sl-odd" min="1.1" max="5" step="0.05" value="1.72" />
+          <span class="slider-val" id="sl-odd-val">1.72</span>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Odd máxima</label>
+        <div class="slider-wrap">
+          <input type="range" id="sl-odd-max" min="1.5" max="10" step="0.1" value="3.5" />
+          <span class="slider-val" id="sl-odd-max-val">3.50</span>
         </div>
       </div>
 
       <div class="field">
         <label>Probabilidade mínima (%)</label>
         <div class="slider-wrap">
-          <input type="range" id="sl-prob" min="25" max="75" step="1" value="40" />
-          <span class="slider-val" id="sl-prob-val">40%</span>
+          <input type="range" id="sl-prob" min="25" max="75" step="1" value="44" />
+          <span class="slider-val" id="sl-prob-val">44%</span>
         </div>
+      </div>
+
+      <div class="field">
+        <label>Probabilidade máxima (%)</label>
+        <div class="slider-wrap">
+          <input type="range" id="sl-prob-max" min="50" max="95" step="1" value="80" />
+          <span class="slider-val" id="sl-prob-max-val">80%</span>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Confiança mínima</label>
+        <select id="sel-confidence" style="background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:7px 10px;font-size:13px;width:100%;outline:none;">
+          <option value="baixo">Qualquer (Baixo+)</option>
+          <option value="medio">Médio+</option>
+          <option value="alto">Alto apenas</option>
+        </select>
+        <span class="hint">Alto = ≥10 jogos ambos os times</span>
       </div>
     </div>
 
@@ -241,10 +277,10 @@
       <div class="field">
         <label>Fração Kelly (%)</label>
         <div class="slider-wrap">
-          <input type="range" id="sl-kelly" min="5" max="50" step="5" value="25" />
-          <span class="slider-val" id="sl-kelly-val">25%</span>
+          <input type="range" id="sl-kelly" min="5" max="50" step="5" value="20" />
+          <span class="slider-val" id="sl-kelly-val">20%</span>
         </div>
-        <span class="hint">Kelly completo = 100%. Recomendado: 25%</span>
+        <span class="hint">Kelly completo = 100%. Recomendado: 20%</span>
       </div>
     </div>
 
@@ -282,6 +318,7 @@
       <button class="filter-btn" data-tipo="h2h">Moneyline</button>
       <button class="filter-btn" data-tipo="player_prop">Props</button>
       <select class="sort-select" id="sort-select">
+        <option value="score">Ordenar por Score</option>
         <option value="ev">Ordenar por EV</option>
         <option value="odd">Ordenar por Odd</option>
         <option value="prob">Ordenar por Probabilidade</option>
@@ -315,10 +352,12 @@ let activeFilter = 'all';
 (function init() {
   const today = new Date().toISOString().slice(0, 10);
   document.getElementById('inp-date').value = today;
-  bindSlider('sl-ev',    'sl-ev-val',    v => v.toFixed(1) + '%');
-  bindSlider('sl-odd',   'sl-odd-val',   v => v.toFixed(2));
-  bindSlider('sl-prob',  'sl-prob-val',  v => v.toFixed(0) + '%');
-  bindSlider('sl-kelly', 'sl-kelly-val', v => v.toFixed(0) + '%');
+  bindSlider('sl-ev',       'sl-ev-val',       v => v.toFixed(1) + '%');
+  bindSlider('sl-odd',      'sl-odd-val',      v => v.toFixed(2));
+  bindSlider('sl-odd-max',  'sl-odd-max-val',  v => v.toFixed(2));
+  bindSlider('sl-prob',     'sl-prob-val',     v => v.toFixed(0) + '%');
+  bindSlider('sl-prob-max', 'sl-prob-max-val', v => v.toFixed(0) + '%');
+  bindSlider('sl-kelly',    'sl-kelly-val',    v => v.toFixed(0) + '%');
   document.getElementById('btn-fetch').addEventListener('click', fetchPalpites);
 
   document.querySelectorAll('.filter-btn').forEach(btn => {
@@ -332,8 +371,9 @@ let activeFilter = 'all';
 
   document.getElementById('sort-select').addEventListener('change', renderEntries);
 
-  // Re-render on prob slider change (client-side filter only)
+  // Re-render on prob/confidence slider change (client-side filter only)
   document.getElementById('sl-prob').addEventListener('input', renderEntries);
+  document.getElementById('sl-prob-max').addEventListener('input', renderEntries);
 })();
 
 function bindSlider(id, valId, fmt) {
@@ -355,10 +395,19 @@ async function fetchPalpites() {
   const date        = document.getElementById('inp-date').value;
   const evMin       = parseFloat(document.getElementById('sl-ev').value) / 100;
   const oddMin      = parseFloat(document.getElementById('sl-odd').value);
+  const oddMax      = parseFloat(document.getElementById('sl-odd-max').value);
+  const probMin     = parseFloat(document.getElementById('sl-prob').value) / 100;
+  const probMax     = parseFloat(document.getElementById('sl-prob-max').value) / 100;
+  const minConf     = document.getElementById('sel-confidence').value;
   const bankroll    = parseFloat(document.getElementById('inp-bankroll').value) || 5000;
   const kellyFrac   = parseFloat(document.getElementById('sl-kelly').value) / 100;
 
-  const params = new URLSearchParams({ date, minEV: evMin, minOdd: oddMin, bankroll, kellyFraction: kellyFrac });
+  const params = new URLSearchParams({
+    date, minEV: evMin, minOdd: oddMin, maxOdd: oddMax,
+    minProb: probMin, maxProb: probMax,
+    minConfidence: minConf, minGames: 10,
+    bankroll, kellyFraction: kellyFrac
+  });
 
   try {
     const res  = await fetch(`/api/bot/daily?${params}`);
@@ -416,10 +465,12 @@ function renderEntries() {
   const grid      = document.getElementById('entries-grid');
   const sortKey   = document.getElementById('sort-select').value;
   const probMin   = parseFloat(document.getElementById('sl-prob').value) / 100;
+  const probMax   = parseFloat(document.getElementById('sl-prob-max').value) / 100;
 
   let list = allEntries.filter(e => {
     if (activeFilter !== 'all' && e.tipo !== activeFilter) return false;
     if ((e.prob || 0) < probMin) return false;
+    if ((e.prob || 0) > probMax) return false;
     return true;
   });
 
@@ -429,7 +480,8 @@ function renderEntries() {
       case 'prob':  return b.prob  - a.prob;
       case 'kelly': return b.kelly - a.kelly;
       case 'valor': return (b.valor_sugerido || 0) - (a.valor_sugerido || 0);
-      default:      return b.ev    - a.ev;
+      case 'ev':    return b.ev    - a.ev;
+      default:      return (b.modelScore || 0) - (a.modelScore || 0);
     }
   });
 
@@ -468,11 +520,24 @@ function entryCard(e) {
   const bookLabel = e.bookmaker ? `<span style="font-size:10px;color:var(--muted);margin-left:6px">${esc(e.bookmaker)}</span>` : '';
   const estimatedWarning = e.estimated ? `<div style="background:#2a1a00;border:1px solid #fb850033;border-radius:6px;padding:6px 10px;font-size:11px;color:var(--orange)">⚠️ Odds estimadas (sem bookmaker disponível) — use para análise apenas</div>` : '';
 
+  const confLabel = { alto: 'Alto', medio: 'Médio', baixo: 'Baixo' }[e.confidence] || '—';
+  const confClass = { alto: 'conf-alto', medio: 'conf-medio', baixo: 'conf-baixo' }[e.confidence] || 'conf-baixo';
+  const edgePct   = e.edge != null ? (e.edge * 100).toFixed(1) + '%' : '—';
+  const nGames    = e.nGames != null ? e.nGames : '—';
+  const scoreVal  = e.modelScore != null ? e.modelScore.toFixed(3) : '—';
+  const consistPct = e.consistency != null ? (e.consistency * 100).toFixed(0) + '%' : '—';
+
   return `
   <div class="entry-card">
     <div class="entry-head">
       <div class="entry-desc">${esc(e.descricao)}${bookLabel}</div>
       <div class="badge ${badgeClass}">${tipoLabel}</div>
+    </div>
+
+    <div class="entry-tags">
+      <span class="conf-badge ${confClass}">${confLabel}</span>
+      ${nGames !== '—' ? `<span style="font-size:10px;color:var(--muted)">${nGames} jogos</span>` : ''}
+      ${e.modelScore != null ? `<span style="font-size:10px;color:var(--purple);margin-left:auto">Score: ${scoreVal}</span>` : ''}
     </div>
 
     ${estimatedWarning}
@@ -506,12 +571,27 @@ function entryCard(e) {
         <div class="m-val purple">${(e.kelly*100).toFixed(2)}%</div>
       </div>
       <div class="metric">
+        <div class="m-label">Edge</div>
+        <div class="m-val green">${edgePct}</div>
+      </div>
+      <div class="metric">
+        <div class="m-label">Consist.</div>
+        <div class="m-val">${consistPct}</div>
+      </div>
+    </div>
+
+    <div class="entry-metrics">
+      <div class="metric">
         <div class="m-label">Média</div>
         <div class="m-val">${e.avg != null ? e.avg : '—'}</div>
       </div>
       <div class="metric">
         <div class="m-label">Linha</div>
         <div class="m-val">${e.line != null ? e.line : '—'}</div>
+      </div>
+      <div class="metric">
+        <div class="m-label">Implíc.</div>
+        <div class="m-val">${e.impliedProb != null ? (e.impliedProb*100).toFixed(1)+'%' : '—'}</div>
       </div>
     </div>
 
