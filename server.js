@@ -152,15 +152,18 @@ async function iSportsFetch(path, params, timeoutMs=12000) {
   }
 }
 
-// ─── iSports Odds ─────────────────────────────────────────
+// ─── iSports Odds (tentativa — endpoint pode não existir neste plano) ────────
 async function fetchISportsOddsForGame(matchId) {
   try {
-    const r = await iSportsFetch('/sport/basketball/odds', { matchId }, 10000);
-    if (r.status === 200 && r.body != null) return r.body;
+    const r = await iSportsFetch('/sport/basketball/odds', { matchId }, 8000);
+    // Verifica se é uma resposta real (não erro 404/403)
+    if (r.status === 200 && r.body != null) {
+      const list = extractList(r.body);
+      return list.length ? list[0] : (typeof r.body === 'object' && !Array.isArray(r.body) ? r.body : null);
+    }
     return null;
   } catch(e) {
-    console.warn(`[isports-odds] matchId=${matchId}: ${e.message}`);
-    return null;
+    return null; // endpoint inexistente — silencioso
   }
 }
 

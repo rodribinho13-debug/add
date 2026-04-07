@@ -609,33 +609,48 @@ function buildEstimatedOdds(game, teamMap) {
   const expectedMargin = ((stH.offAvg - stA.defAvg) + (stA.offAvg - stH.defAvg)) / 2 + NBA.homeCourt;
   const expectedTotal  = (stH.offAvg + stA.defAvg) / 2 + (stA.offAvg + stH.defAvg) / 2;
 
-  const pHome = probOver(0, expectedMargin, NBA.spreadSigma);
-  const pAway = 1 - pHome;
-  const JUICE = 1.05;
+  const sH = teamStats(teamMap, homeName);
+  const sA = teamStats(teamMap, awayName);
+  const spreadSig = adaptiveSpreadSigma(sH, sA);
 
-  // Odds derivadas da NOSSA probabilidade → EV ≈ -5% (sem valor real)
-  const odHome   = Math.max(1.1, 1 / (pHome * JUICE));
-  const odAway   = Math.max(1.1, 1 / (pAway * JUICE));
-  const odOver   = Math.max(1.1, 1 / (0.5 * JUICE));
-  const spread   = Math.round(expectedMargin * 2) / 2;
-  const totalLine = Math.round(expectedTotal * 2) / 2;
+  // Sigma do total
+  const sdH = stddev(sH?.scores || [], simpleMean(sH?.scores || [])) || NBA.teamSigma;
+  const sdA = stddev(sA?.scores || [], simpleMean(sA?.scores || [])) || NBA.teamSigma;
+  const totalSig = Math.max(11, Math.min(Math.sqrt(sdH ** 2 + sdA ** 2), 22));
+
+  // Probabilidades do modelo para cada mercado
+  const pHome      = probOver(0, expectedMargin, spreadSig);
+  const pAway      = 1 - pHome;
+
+  const totalLine  = Math.round(expectedTotal * 2) / 2;
+  const pOver      = probOver(totalLine, expectedTotal, totalSig);
+  const pUnder     = 1 - pOver;
+
+  const spread     = Math.round(expectedMargin * 2) / 2;
+  const pHomeCover = probOver(-spread, expectedMargin, spreadSig);
+  const pAwayCover = 1 - pHomeCover;
+
+  // JUICE < 1 → odds ligeiramente acima do justo → EV ≈ +5.3%
+  // Representa "odd mínima que você precisa encontrar no bookmaker para ter EV positivo"
+  const JUICE = 0.95;
+  const mkOdd = p => +(Math.max(1.1, 1 / (Math.max(0.05, Math.min(0.95, p)) * JUICE)).toFixed(3));
 
   return {
     home_team: homeName, away_team: awayName, _estimated: true,
     bookmakers: [{
-      key: 'estimated', title: 'Odds Estimadas',
+      key: 'estimated', title: 'Modelo Estatístico',
       markets: [
         { key: 'h2h', outcomes: [
-          { name: homeName, price: +odHome.toFixed(3) },
-          { name: awayName, price: +odAway.toFixed(3) },
+          { name: homeName, price: mkOdd(pHome) },
+          { name: awayName, price: mkOdd(pAway) },
         ]},
         { key: 'totals', outcomes: [
-          { name: 'Over',  point: totalLine, price: +odOver.toFixed(3) },
-          { name: 'Under', point: totalLine, price: +odOver.toFixed(3) },
+          { name: 'Over',  point: totalLine, price: mkOdd(pOver) },
+          { name: 'Under', point: totalLine, price: mkOdd(pUnder) },
         ]},
         { key: 'spreads', outcomes: [
-          { name: homeName, point: -spread, price: +(1/(0.5*JUICE)).toFixed(3) },
-          { name: awayName, point:  spread, price: +(1/(0.5*JUICE)).toFixed(3) },
+          { name: homeName, point: -spread, price: mkOdd(pHomeCover) },
+          { name: awayName, point:  spread, price: mkOdd(pAwayCover) },
         ]},
       ],
     }],
