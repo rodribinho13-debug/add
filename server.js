@@ -252,6 +252,78 @@ function oddsURL(path, params) {
 // Prioridade de bookmakers (melhores odds para o apostador)
 const BOOK_PRIORITY = ['bet365','draftkings','fanduel','betmgm','betrivers','unibet','pinnacle','williamhill'];
 
+// ─── ActionNetwork (API pública, sem autenticação) ────────
+// Retorna odds de DraftKings(15), FanDuel(30), BetMGM(76), Caesars(75), PointsBet(123)
+async function fetchActionNetworkOdds(date) {
+  const cacheKey = `actionnet_${date}`;
+  const cached = getCache(cacheKey, 1800);
+  if (cached && cached.length > 0) return cached;
+
+  const url = `https://api.actionnetwork.com/web/v1/scoreboard/nba?period=game&bookIds=15,30,76,75,123&date=${date}`;
+  let r;
+  try {
+    r = await fetchJSON(url, 10000);
+  } catch(e) {
+    console.warn(`[actionnet] ${e.message}`);
+    return [];
+  }
+  if (r.status !== 200 || !r.body) return [];
+
+  const games = r.body.games || [];
+  const result = [];
+
+  for (const g of games) {
+    const homeName = g.home_team?.full_name || g.home_team?.abbr || '';
+    const awayName = g.away_team?.full_name || g.away_team?.abbr || '';
+    if (!homeName || !awayName) continue;
+
+    const markets = [];
+    // Pega as odds de cada livro disponível, prefere DraftKings (id=15) ou FanDuel (id=30)
+    const books   = g.odds || [];
+    const bookOrder = [15, 30, 76, 75, 123]; // DK, FD, BetMGM, Caesars, PB
+    const book    = bookOrder.map(id => books.find(b => b.book_id === id)).find(Boolean) || books[0];
+    if (!book) continue;
+
+    // Moneyline (h2h)
+    if (book.ml_home != null && book.ml_away != null) {
+      const toDecimal = ml => ml > 0 ? +(ml/100 + 1).toFixed(3) : +(100/Math.abs(ml) + 1).toFixed(3);
+      markets.push({ key: 'h2h', outcomes: [
+        { name: homeName, price: toDecimal(book.ml_home) },
+        { name: awayName, price: toDecimal(book.ml_away) },
+      ]});
+    }
+    // Total (over/under)
+    if (book.total != null && book.over != null) {
+      const toDecimal = ml => ml > 0 ? +(ml/100 + 1).toFixed(3) : +(100/Math.abs(ml) + 1).toFixed(3);
+      markets.push({ key: 'totals', outcomes: [
+        { name: 'Over',  point: book.total, price: toDecimal(book.over)  },
+        { name: 'Under', point: book.total, price: toDecimal(book.under || book.over) },
+      ]});
+    }
+    // Spread
+    if (book.spread_home != null && book.home_spread != null) {
+      const toDecimal = ml => ml > 0 ? +(ml/100 + 1).toFixed(3) : +(100/Math.abs(ml) + 1).toFixed(3);
+      markets.push({ key: 'spreads', outcomes: [
+        { name: homeName, point:  book.home_spread,  price: toDecimal(book.spread_home) },
+        { name: awayName, point: -book.home_spread,  price: toDecimal(book.spread_away || book.spread_home) },
+      ]});
+    }
+
+    if (!markets.length) continue;
+    result.push({
+      home_team: homeName, away_team: awayName,
+      bookmakers: [{ key: 'draftkings', title: 'DraftKings/FanDuel', markets }],
+      _source: 'actionnetwork',
+    });
+  }
+
+  if (result.length > 0) {
+    setCache(cacheKey, result);
+    console.log(`[actionnet] ${result.length} jogos com odds (DK/FD/BetMGM)`);
+  }
+  return result;
+}
+
 async function fetchOddsWithBet365(sport = 'basketball_nba', regions = 'us,eu,uk', markets = 'h2h,totals,spreads') {
   const cacheKey = `odds_${sport}_${markets}`;
   const cached = getCache(cacheKey, 1800); // 30 min
@@ -603,39 +675,41 @@ async function handleAPI(pathname, query, res) {
       const isportsOddsGames = isportsOddsMap.size;
       console.log(`[bot/daily] iSports odds: ${isportsOddsGames}/${Math.min(schedule.length, 12)} jogos`);
 
-      // 3. The Odds API como tentativa adicional (não bloqueia se falhar)
-      let oddsApiGames = 0;
+      // 3. Fontes de odds externas (paralelas, nenhuma bloqueia)
+      //    Prioridade: The Odds API > ActionNetwork (DK/FD) > iSports odds
       let oddsApiData = [];
-      try {
-        oddsApiData = await fetchOddsWithBet365('basketball_nba');
-        oddsApiGames = oddsApiData.length;
-      } catch(e) {
-        console.warn(`[bot/daily] The Odds API falhou: ${e.message}`);
-      }
+      let actionNetData = [];
+      await Promise.allSettled([
+        fetchOddsWithBet365('basketball_nba').then(d => { oddsApiData = d; }).catch(() => {}),
+        fetchActionNetworkOdds(date).then(d => { actionNetData = d; }).catch(() => {}),
+      ]);
+      const oddsApiGames = oddsApiData.length;
+      console.log(`[bot/daily] odds: TheOddsAPI=${oddsApiData.length} ActionNet=${actionNetData.length} iSports=${isportsOddsGames}`);
 
-      // 4. Mescla: começa com iSports odds, substitui/sobrepõe com The Odds API se disponível
-      //    The Odds API tem prioridade quando disponível para o mesmo jogo
+      // 4. Mescla: prioridade The Odds API > ActionNetwork > iSports odds
+      function makeOddsKey(home, away) {
+        return `${(home||'').toLowerCase().replace(/[^a-z]/g,'')}__${(away||'').toLowerCase().replace(/[^a-z]/g,'')}`;
+      }
       const oddsApiByTeam = new Map();
-      for (const g of oddsApiData) {
-        const key = `${(g.home_team||'').toLowerCase()}__${(g.away_team||'').toLowerCase()}`;
-        const key2 = `${(g.away_team||'').toLowerCase()}__${(g.home_team||'').toLowerCase()}`;
-        oddsApiByTeam.set(key, g);
-        oddsApiByTeam.set(key2, g);
+      for (const g of [...oddsApiData]) {
+        oddsApiByTeam.set(makeOddsKey(g.home_team, g.away_team), g);
+        oddsApiByTeam.set(makeOddsKey(g.away_team, g.home_team), g);
+      }
+      const actionNetByTeam = new Map();
+      for (const g of actionNetData) {
+        actionNetByTeam.set(makeOddsKey(g.home_team, g.away_team), g);
+        actionNetByTeam.set(makeOddsKey(g.away_team, g.home_team), g);
       }
 
       const mergedOdds = [];
+      // iSports base, sobreposto por ActionNet, sobreposto por OddsAPI
       for (const [matchId, isportsOdd] of isportsOddsMap) {
-        const k = `${isportsOdd.home_team.toLowerCase()}__${isportsOdd.away_team.toLowerCase()}`;
-        const apiGame = oddsApiByTeam.get(k);
-        if (apiGame) {
-          // The Odds API tem prioridade
-          mergedOdds.push(apiGame);
-        } else {
-          mergedOdds.push(isportsOdd);
-        }
+        const k  = makeOddsKey(isportsOdd.home_team, isportsOdd.away_team);
+        const best = oddsApiByTeam.get(k) || actionNetByTeam.get(k) || isportsOdd;
+        mergedOdds.push(best);
       }
-      // Adiciona jogos do Odds API que não estão no iSports
-      for (const g of oddsApiData) {
+      // Jogos que só estão no ActionNet ou OddsAPI (não no iSports)
+      for (const g of [...actionNetData, ...oddsApiData]) {
         const alreadyInMerged = mergedOdds.some(m =>
           m.home_team === g.home_team && m.away_team === g.away_team
         );
