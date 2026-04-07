@@ -165,10 +165,28 @@ const BOOK_PRIORITY = ['bet365','draftkings','fanduel','betmgm','betrivers','uni
 async function fetchOddsWithBet365(sport = 'basketball_nba', regions = 'us,eu,uk', markets = 'h2h,totals,spreads') {
   const cacheKey = `odds_${sport}_${markets}`;
   const cached = getCache(cacheKey, 1800); // 30 min
-  if (cached) return cached;
+  if (cached && cached.length > 0) return cached; // não usa cache vazio
 
-  const r = await fetchJSON(oddsURL(`/v4/sports/${sport}/odds`, { regions, markets, oddsFormat: 'decimal' }));
-  if (r.status !== 200 || !Array.isArray(r.body)) return [];
+  let r;
+  try {
+    r = await fetchJSON(oddsURL(`/v4/sports/${sport}/odds`, { regions, markets, oddsFormat: 'decimal' }));
+  } catch(e) {
+    console.error(`[odds] Erro na requisição: ${e.message}`);
+    return [];
+  }
+
+  if (r.status !== 200) {
+    console.error(`[odds] Status ${r.status} — resposta: ${JSON.stringify(r.body || r.raw || '').slice(0,200)}`);
+    return [];
+  }
+  if (!Array.isArray(r.body)) {
+    console.error(`[odds] Resposta não é array: ${JSON.stringify(r.body).slice(0,200)}`);
+    return [];
+  }
+  if (r.body.length === 0) {
+    console.warn(`[odds] Array vazio recebido (sem jogos na API para ${sport})`);
+    return []; // não cacheamos vazio
+  }
 
   // Para cada jogo: prefere Bet365, senão usa o melhor bookmaker disponível
   const result = r.body
@@ -435,7 +453,7 @@ async function handleAPI(pathname, query, res) {
         fetchOddsWithBet365('basketball_nba'),
         (async () => {
           const arr = [];
-          const maxDays = Math.min(parseInt(query.historyDays) || 10, 14);
+          const maxDays = Math.min(parseInt(query.historyDays) || 20, 28);
           for (let i = 1; i <= maxDays; i++) {
             const d = new Date(date);
             d.setDate(d.getDate() - i);
