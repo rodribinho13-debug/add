@@ -257,10 +257,10 @@
       <div class="field">
         <label>Jogos mínimos por time</label>
         <div class="slider-wrap">
-          <input type="range" id="sl-games" min="0" max="15" step="1" value="5" />
-          <span class="slider-val" id="sl-games-val">5</span>
+          <input type="range" id="sl-games" min="0" max="20" step="1" value="10" />
+          <span class="slider-val" id="sl-games-val">10</span>
         </div>
-        <span class="hint">0 = sem filtro | 10 = alta confiança (requer mais histórico)</span>
+        <span class="hint">Mínimo de jogos históricos por time (0 = sem filtro)</span>
       </div>
 
       <div class="field">
@@ -348,6 +348,7 @@
     <details class="debug-panel" id="debug-panel" style="display:none">
       <summary>Debug / Resposta bruta da API</summary>
       <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+        <button onclick="testScheduleDetail()" style="background:#21262d;border:1px solid var(--border);color:var(--text);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px;background:#1a3a1a">Ver Status dos Jogos</button>
         <button onclick="testOddsAPI()" style="background:#21262d;border:1px solid var(--border);color:var(--text);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px">Testar API de Odds</button>
         <button onclick="testISportsOdds()" style="background:#21262d;border:1px solid var(--border);color:var(--text);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px">Testar iSports Odds</button>
         <button onclick="testSchedule()" style="background:#21262d;border:1px solid var(--border);color:var(--text);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px">Testar iSports Schedule</button>
@@ -631,6 +632,23 @@ async function testOddsAPI() {
     const r = await fetch('/api/debug-odds');
     const d = await r.json();
     pre.textContent = '[ODDS API]\n' + JSON.stringify(d, null, 2);
+  } catch(e) { pre.textContent = 'Erro: ' + e.message; }
+}
+
+async function testScheduleDetail() {
+  const pre = document.getElementById('debug-pre');
+  const date = document.getElementById('inp-date').value;
+  pre.textContent = 'Buscando status dos jogos...';
+  document.getElementById('debug-panel').open = true;
+  try {
+    const r = await fetch('/api/debug-schedule?date=' + date);
+    const d = await r.json();
+    const lines = [`[SCHEDULE] ${d.nba} jogos NBA em ${d.date}\n`];
+    for (const g of (d.games || [])) {
+      const score = (g.homeScore != null) ? `${g.homeScore}-${g.awayScore}` : 'sem placar';
+      lines.push(`  status=${g.status} | ${g.home} vs ${g.away} | ${score} | ${g.time || 'sem horário'}`);
+    }
+    pre.textContent = lines.join('\n');
   } catch(e) { pre.textContent = 'Erro: ' + e.message; }
 }
 

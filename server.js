@@ -989,6 +989,25 @@ async function handleAPI(pathname, query, res) {
     }
 
 
+    // /api/debug-schedule — mostra jogos do schedule com status, scores, times
+    if (pathname === '/api/debug-schedule') {
+      const date = query.date || new Date().toISOString().slice(0, 10);
+      const r = await iSportsFetch('/sport/basketball/schedule/basic', { date });
+      const all = extractList(r.body);
+      const nba = all.filter(isNBA);
+      const summary = nba.map(m => ({
+        matchId:   m.matchId || m.id,
+        home:      m.homeTeamName || m.homeName,
+        away:      m.awayTeamName || m.awayName,
+        status:    m.status,
+        homeScore: m.homeScore,
+        awayScore: m.awayScore,
+        time:      m.matchTime || m.startTime,
+        leagueId:  m.leagueId,
+      }));
+      return sendJSON(res, { ok: true, date, total: all.length, nba: nba.length, games: summary });
+    }
+
     // /api/debug-odds — diagnóstico da The Odds API
     if (pathname === '/api/debug-odds') {
       const sport = query.sport || 'basketball_nba';

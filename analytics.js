@@ -677,8 +677,14 @@ async function generateAllEntries(data, config) {
   const all = [];
 
   for (const game of schedule) {
-    const status = parseInt(game.status ?? -1);
-    if (status > 0) continue; // pula jogos iniciados/terminados
+    // Pula jogos já jogados: verifica placar real (mais confiável que status)
+    const hs  = parseFloat(game.homeScore);
+    const as_ = parseFloat(game.awayScore);
+    if (!isNaN(hs) && !isNaN(as_) && (hs > 0 || as_ > 0)) continue;
+
+    // Fallback: status alto = claramente terminado (iSports: 1=agendado, 2-6=em jogo, 7+=terminado)
+    const status = parseInt(game.status ?? 1);
+    if (status >= 7) continue;
 
     const homeName = game.homeName || game.homeTeamName || '';
     const awayName = game.awayName || game.awayTeamName || '';
