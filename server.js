@@ -18,7 +18,7 @@ const PORT = 3000;
 // Caso não exista, usa as fornecidas (mas NUNCA commite)
 try { require('dotenv').config(); } catch(e) {}
 const ISPORTS_KEY   = process.env.ISPORTS_KEY   || 'dFAjm3gu69q7Bv2C';
-const ODDS_KEY      = process.env.ODDS_KEY      || 'b4b5039610221eb1aefe86749712cbd3';
+const ODDS_KEY      = process.env.ODDS_KEY      || 'c639b61784bb9f40e7a700b13716cd6e';
 // =========================================================
 
 const ISPORTS_HOST  = 'api.isportsapi.com';
