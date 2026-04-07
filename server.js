@@ -324,6 +324,187 @@ async function fetchActionNetworkOdds(date) {
   return result;
 }
 
+// ─── DraftKings API direta (pública, sem autenticação) ────
+// NBA league 42648 | Game Lines category 583 | subcategory 4517
+async function fetchDraftKingsOdds() {
+  const cacheKey = 'dk_nba_odds';
+  const cached = getCache(cacheKey, 1800);
+  if (cached && cached.length > 0) return cached;
+
+  const url = 'https://sportsbook-nash.draftkings.com/api/sportscontent/dkusnj/v1/leagues/42648/categories/583/subcategories/4517';
+  let r;
+  try {
+    r = await fetchJSON(url, 12000);
+  } catch(e) {
+    console.warn(`[draftkings] ${e.message}`);
+    return [];
+  }
+  if (r.status !== 200 || !r.body) return [];
+
+  const evGroup    = r.body.eventGroup || {};
+  const events     = evGroup.events || [];
+  const categories = evGroup.offerCategories || [];
+
+  // Mapa eventId → {home, away}
+  const evMap = {};
+  for (const ev of events) {
+    if (ev.eventId) evMap[ev.eventId] = { home: ev.teamName1 || '', away: ev.teamName2 || '' };
+  }
+
+  // Mapa eventId → {h2h, spreads, totals}
+  const offersMap = {};
+  const amToDecimal = ml => {
+    const m = parseFloat(ml);
+    if (!m || m === 0) return null;
+    return m > 0 ? +(m / 100 + 1).toFixed(3) : +(100 / Math.abs(m) + 1).toFixed(3);
+  };
+
+  for (const cat of categories) {
+    for (const sub of (cat.offerSubcategoryDescriptors || [])) {
+      for (const offerGroup of (sub.offerSubcategory?.offers || [])) {
+        const group = Array.isArray(offerGroup) ? offerGroup : [offerGroup];
+        for (const offer of group) {
+          const eid  = offer.eventId;
+          if (!eid || !evMap[eid]) continue;
+          if (!offersMap[eid]) offersMap[eid] = {};
+
+          const label    = (offer.label || '').toLowerCase();
+          const outcomes = (offer.outcomes || []).filter(o => o.oddsDecimal || o.oddsAmerican);
+
+          if (label.includes('moneyline') || label === 'money line') {
+            offersMap[eid].h2h = outcomes.map(o => ({
+              name:  o.label || '',
+              price: parseFloat(o.oddsDecimal) || amToDecimal(o.oddsAmerican) || 0,
+            })).filter(o => o.price > 1);
+
+          } else if (label.includes('spread') || label.includes('point spread')) {
+            offersMap[eid].spreads = outcomes.map(o => ({
+              name:  o.label || '',
+              price: parseFloat(o.oddsDecimal) || amToDecimal(o.oddsAmerican) || 0,
+              point: parseFloat(o.line) || 0,
+            })).filter(o => o.price > 1);
+
+          } else if (label.includes('total')) {
+            offersMap[eid].totals = outcomes.map(o => ({
+              name:  o.label || '',    // 'Over' / 'Under'
+              price: parseFloat(o.oddsDecimal) || amToDecimal(o.oddsAmerican) || 0,
+              point: parseFloat(o.line) || 0,
+            })).filter(o => o.price > 1);
+          }
+        }
+      }
+    }
+  }
+
+  const result = [];
+  for (const [eid, teams] of Object.entries(evMap)) {
+    if (!teams.home || !teams.away) continue;
+    const offers  = offersMap[eid] || {};
+    const markets = [];
+    if ((offers.h2h     || []).length >= 2) markets.push({ key: 'h2h',     outcomes: offers.h2h });
+    if ((offers.spreads || []).length >= 2) markets.push({ key: 'spreads', outcomes: offers.spreads });
+    if ((offers.totals  || []).length >= 2) markets.push({ key: 'totals',  outcomes: offers.totals });
+    if (!markets.length) continue;
+    result.push({
+      home_team: teams.home, away_team: teams.away,
+      bookmakers: [{ key: 'draftkings', title: 'DraftKings', markets }],
+      _source: 'draftkings',
+    });
+  }
+
+  if (result.length > 0) {
+    setCache(cacheKey, result);
+    console.log(`[draftkings] ${result.length} jogos com odds`);
+  }
+  return result;
+}
+
+// ─── FanDuel API direta (pública) ─────────────────────────
+async function fetchFanDuelOdds() {
+  const cacheKey = 'fd_nba_odds';
+  const cached = getCache(cacheKey, 1800);
+  if (cached && cached.length > 0) return cached;
+
+  // FanDuel endpoint para NBA
+  const url = 'https://sbapi.fanduel.com/v1/sports/nba/events?regionCode=US&_ak=FhMFpcPWXMeyZxOx&betTypes=money-line,asian-handicap,over-under&includePrice=true';
+  let r;
+  try {
+    r = await fetchJSON(url, 12000);
+  } catch(e) {
+    console.warn(`[fanduel] ${e.message}`);
+    return [];
+  }
+  if (r.status !== 200 || !r.body) return [];
+
+  const events = r.body.attachments?.events
+    ? Object.values(r.body.attachments.events)
+    : (r.body.events || []);
+
+  const markets = r.body.attachments?.markets
+    ? Object.values(r.body.attachments.markets)
+    : [];
+
+  const result = [];
+
+  for (const ev of events) {
+    if (ev.eventType !== 'MATCH' && ev.eventTypeId) continue; // só partidas regulares
+    const runners = ev.runners || [];
+    const home = runners.find(rn => rn.runnerOrder === 1)?.runnerName || ev.homeTeam || '';
+    const away = runners.find(rn => rn.runnerOrder === 2)?.runnerName || ev.awayTeam || '';
+    if (!home || !away) continue;
+
+    const evMarkets = markets.filter(m => m.eventId === ev.eventId);
+    const mktList   = [];
+
+    for (const mkt of evMarkets) {
+      const mktType  = (mkt.marketType || mkt.bettingType || '').toLowerCase();
+      const runners2 = mkt.runners || [];
+      const toDecimal = price => {
+        if (price > 10) return +(price / 100 + 1).toFixed(3); // american
+        if (price >= 1) return +price.toFixed(3); // already decimal
+        return null;
+      };
+
+      if (mktType.includes('money') || mktType.includes('win')) {
+        const outs = runners2.map(rn => ({
+          name: rn.runnerName || '',
+          price: toDecimal(rn.lastPriceTraded || rn.handicap || 0),
+        })).filter(o => o.price > 1);
+        if (outs.length >= 2) mktList.push({ key: 'h2h', outcomes: outs });
+
+      } else if (mktType.includes('handicap') || mktType.includes('spread')) {
+        const outs = runners2.map(rn => ({
+          name: rn.runnerName || '',
+          price: toDecimal(rn.lastPriceTraded || 0),
+          point: parseFloat(rn.handicap || 0),
+        })).filter(o => o.price > 1);
+        if (outs.length >= 2) mktList.push({ key: 'spreads', outcomes: outs });
+
+      } else if (mktType.includes('total') || mktType.includes('over')) {
+        const outs = runners2.map(rn => ({
+          name:  rn.runnerName || '',
+          price: toDecimal(rn.lastPriceTraded || 0),
+          point: parseFloat(mkt.line || rn.handicap || 0),
+        })).filter(o => o.price > 1);
+        if (outs.length >= 2) mktList.push({ key: 'totals', outcomes: outs });
+      }
+    }
+
+    if (!mktList.length) continue;
+    result.push({
+      home_team: home, away_team: away,
+      bookmakers: [{ key: 'fanduel', title: 'FanDuel', markets: mktList }],
+      _source: 'fanduel',
+    });
+  }
+
+  if (result.length > 0) {
+    setCache(cacheKey, result);
+    console.log(`[fanduel] ${result.length} jogos com odds`);
+  }
+  return result;
+}
+
 async function fetchOddsWithBet365(sport = 'basketball_nba', regions = 'us,eu,uk', markets = 'h2h,totals,spreads') {
   const cacheKey = `odds_${sport}_${markets}`;
   const cached = getCache(cacheKey, 1800); // 30 min
@@ -676,40 +857,51 @@ async function handleAPI(pathname, query, res) {
       console.log(`[bot/daily] iSports odds: ${isportsOddsGames}/${Math.min(schedule.length, 12)} jogos`);
 
       // 3. Fontes de odds externas (paralelas, nenhuma bloqueia)
-      //    Prioridade: The Odds API > ActionNetwork (DK/FD) > iSports odds
-      let oddsApiData = [];
-      let actionNetData = [];
+      //    Prioridade: The Odds API > DraftKings > FanDuel > ActionNetwork > iSports
+      let oddsApiData = [], dkData = [], fdData = [], actionNetData = [];
       await Promise.allSettled([
         fetchOddsWithBet365('basketball_nba').then(d => { oddsApiData = d; }).catch(() => {}),
+        fetchDraftKingsOdds().then(d => { dkData = d; }).catch(() => {}),
+        fetchFanDuelOdds().then(d => { fdData = d; }).catch(() => {}),
         fetchActionNetworkOdds(date).then(d => { actionNetData = d; }).catch(() => {}),
       ]);
       const oddsApiGames = oddsApiData.length;
-      console.log(`[bot/daily] odds: TheOddsAPI=${oddsApiData.length} ActionNet=${actionNetData.length} iSports=${isportsOddsGames}`);
+      console.log(`[bot/daily] odds: OddsAPI=${oddsApiData.length} DK=${dkData.length} FD=${fdData.length} AN=${actionNetData.length} iSports=${isportsOddsGames}`);
 
-      // 4. Mescla: prioridade The Odds API > ActionNetwork > iSports odds
+      // 4. Mescla: prioridade The Odds API > DraftKings > FanDuel > ActionNetwork > iSports
       function makeOddsKey(home, away) {
         return `${(home||'').toLowerCase().replace(/[^a-z]/g,'')}__${(away||'').toLowerCase().replace(/[^a-z]/g,'')}`;
       }
-      const oddsApiByTeam = new Map();
-      for (const g of [...oddsApiData]) {
-        oddsApiByTeam.set(makeOddsKey(g.home_team, g.away_team), g);
-        oddsApiByTeam.set(makeOddsKey(g.away_team, g.home_team), g);
+      function buildTeamIndex(arr) {
+        const m = new Map();
+        for (const g of arr) {
+          m.set(makeOddsKey(g.home_team, g.away_team), g);
+          m.set(makeOddsKey(g.away_team, g.home_team), g);
+        }
+        return m;
       }
-      const actionNetByTeam = new Map();
-      for (const g of actionNetData) {
-        actionNetByTeam.set(makeOddsKey(g.home_team, g.away_team), g);
-        actionNetByTeam.set(makeOddsKey(g.away_team, g.home_team), g);
-      }
+      // Índices por fonte (ordem crescente de prioridade)
+      const byAN  = buildTeamIndex(actionNetData);
+      const byFD  = buildTeamIndex(fdData);
+      const byDK  = buildTeamIndex(dkData);
+      const byAPI = buildTeamIndex(oddsApiData);
 
       const mergedOdds = [];
-      // iSports base, sobreposto por ActionNet, sobreposto por OddsAPI
-      for (const [matchId, isportsOdd] of isportsOddsMap) {
-        const k  = makeOddsKey(isportsOdd.home_team, isportsOdd.away_team);
-        const best = oddsApiByTeam.get(k) || actionNetByTeam.get(k) || isportsOdd;
-        mergedOdds.push(best);
+      const addedKeys  = new Set();
+
+      const pickBest = (home, away) => {
+        const k = makeOddsKey(home, away);
+        return byAPI.get(k) || byDK.get(k) || byFD.get(k) || byAN.get(k);
+      };
+
+      // Começa pelos jogos do iSports (tem matchId garantido)
+      for (const [, isportsOdd] of isportsOddsMap) {
+        const best = pickBest(isportsOdd.home_team, isportsOdd.away_team) || isportsOdd;
+        const k = makeOddsKey(best.home_team, best.away_team);
+        if (!addedKeys.has(k)) { mergedOdds.push(best); addedKeys.add(k); }
       }
-      // Jogos que só estão no ActionNet ou OddsAPI (não no iSports)
-      for (const g of [...actionNetData, ...oddsApiData]) {
+      // Adiciona jogos de fontes externas não cobertos pelo iSports
+      for (const g of [...oddsApiData, ...dkData, ...fdData, ...actionNetData]) {
         const alreadyInMerged = mergedOdds.some(m =>
           m.home_team === g.home_team && m.away_team === g.away_team
         );
@@ -779,9 +971,14 @@ async function handleAPI(pathname, query, res) {
         total: filtered.length,
         debug: {
           scheduleGames:      schedule.length,
-          isportsOddsGames,
-          oddsApiGames,
-          totalOddsGames,
+          oddsGames:          totalOddsGames,
+          sources: {
+            oddsApi:     oddsApiData.length,
+            draftkings:  dkData.length,
+            fanduel:     fdData.length,
+            actionNet:   actionNetData.length,
+            isports:     isportsOddsGames,
+          },
           propsGames:         propsCount,
           historicalStats:    recentData.length,
           teamsWithMin10Games: teamsWithMin10,
