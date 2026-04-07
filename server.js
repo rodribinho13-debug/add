@@ -152,6 +152,93 @@ async function iSportsFetch(path, params, timeoutMs=12000) {
   }
 }
 
+// ─── iSports Odds ─────────────────────────────────────────
+async function fetchISportsOddsForGame(matchId) {
+  try {
+    const r = await iSportsFetch('/sport/basketball/odds', { matchId }, 10000);
+    if (r.status === 200 && r.body != null) return r.body;
+    return null;
+  } catch(e) {
+    console.warn(`[isports-odds] matchId=${matchId}: ${e.message}`);
+    return null;
+  }
+}
+
+/**
+ * Converte raw iSports odds para o formato esperado por analytics.js:
+ * { home_team, away_team, bookmakers: [{ key, title, markets: [...] }] }
+ */
+function parseISportsOdds(game, raw) {
+  if (!raw) return null;
+
+  // Se for array, pega o primeiro elemento
+  const data = Array.isArray(raw) ? raw[0] : raw;
+  if (!data) return null;
+
+  const h2hOutcomes    = [];
+  const spreadsOutcomes = [];
+  const totalsOutcomes  = [];
+
+  // ── h2h ──────────────────────────────────────────────────
+  // formato eu: { eu: { home, away } }
+  if (data.eu && (data.eu.home != null || data.eu.away != null)) {
+    if (data.eu.home != null) h2hOutcomes.push({ name: game.homeName, price: parseFloat(data.eu.home) });
+    if (data.eu.away != null) h2hOutcomes.push({ name: game.awayName, price: parseFloat(data.eu.away) });
+  }
+  // formato 1x2: { '1x2': { home, away, draw } }
+  const ox = data['1x2'];
+  if (ox && (ox.home != null || ox.away != null) && h2hOutcomes.length === 0) {
+    if (ox.home != null) h2hOutcomes.push({ name: game.homeName, price: parseFloat(ox.home) });
+    if (ox.away != null) h2hOutcomes.push({ name: game.awayName, price: parseFloat(ox.away) });
+  }
+
+  // ── spreads ───────────────────────────────────────────────
+  // formato asia: { asia: { handicap, home, away } }
+  if (data.asia && (data.asia.home != null || data.asia.away != null)) {
+    const hdp = data.asia.handicap != null ? parseFloat(data.asia.handicap) : 0;
+    if (data.asia.home != null) spreadsOutcomes.push({ name: game.homeName, price: parseFloat(data.asia.home), point: hdp });
+    if (data.asia.away != null) spreadsOutcomes.push({ name: game.awayName, price: parseFloat(data.asia.away), point: -hdp });
+  }
+  // formato handicap: { handicap: { hdp, home, away } }
+  if (data.handicap && spreadsOutcomes.length === 0) {
+    const hdp = data.handicap.hdp != null ? parseFloat(data.handicap.hdp) : 0;
+    if (data.handicap.home != null) spreadsOutcomes.push({ name: game.homeName, price: parseFloat(data.handicap.home), point: hdp });
+    if (data.handicap.away != null) spreadsOutcomes.push({ name: game.awayName, price: parseFloat(data.handicap.away), point: -hdp });
+  }
+
+  // ── totals ────────────────────────────────────────────────
+  // formato bigSmall: { bigSmall: { goals, over, under } }
+  if (data.bigSmall && (data.bigSmall.over != null || data.bigSmall.under != null)) {
+    const pt = data.bigSmall.goals != null ? parseFloat(data.bigSmall.goals) : null;
+    if (data.bigSmall.over  != null) totalsOutcomes.push({ name: 'Over',  price: parseFloat(data.bigSmall.over),  point: pt });
+    if (data.bigSmall.under != null) totalsOutcomes.push({ name: 'Under', price: parseFloat(data.bigSmall.under), point: pt });
+  }
+  // formato total: { total: { total, over, under } }
+  if (data.total && totalsOutcomes.length === 0 && (data.total.over != null || data.total.under != null)) {
+    const pt = data.total.total != null ? parseFloat(data.total.total) : null;
+    if (data.total.over  != null) totalsOutcomes.push({ name: 'Over',  price: parseFloat(data.total.over),  point: pt });
+    if (data.total.under != null) totalsOutcomes.push({ name: 'Under', price: parseFloat(data.total.under), point: pt });
+  }
+
+  // Nenhuma odd encontrada
+  if (h2hOutcomes.length === 0 && spreadsOutcomes.length === 0 && totalsOutcomes.length === 0) {
+    return null;
+  }
+
+  const markets = [];
+  if (h2hOutcomes.length)    markets.push({ key: 'h2h',     outcomes: h2hOutcomes });
+  if (spreadsOutcomes.length) markets.push({ key: 'spreads', outcomes: spreadsOutcomes });
+  if (totalsOutcomes.length)  markets.push({ key: 'totals',  outcomes: totalsOutcomes });
+
+  return {
+    id:         String(game.matchId || ''),
+    home_team:  game.homeName,
+    away_team:  game.awayName,
+    bookmakers: [{ key: 'isports', title: 'iSports', markets }],
+    _source:    'isports',
+  };
+}
+
 // ─── The Odds API com filtro Bet365 ───────────────────────
 function oddsURL(path, params) {
   const qs = Object.entries({ apiKey: ODDS_KEY, ...params })
@@ -444,13 +531,9 @@ async function handleAPI(pathname, query, res) {
       const minGames      = parseInt(query.minGames)         || 0;
       const minConfidence = query.minConfidence              || 'baixo';
 
-      // 1. Schedule de HOJE (jogos não iniciados)
-      // 2. Stats dos últimos 10 dias (médias históricas dos times e jogadores)
-      //    ~10 dias garante ≥10 jogos por time para confiança ALTA
-      // 3. Odds gerais Bet365/melhor bookmaker disponível
-      const [schedRes, oddsData, recentRes] = await Promise.allSettled([
+      // 1. Schedule de HOJE + histórico de stats (paralelo)
+      const [schedRes, recentRes] = await Promise.allSettled([
         iSportsFetch('/sport/basketball/schedule/basic', { date }),
-        fetchOddsWithBet365('basketball_nba'),
         (async () => {
           const arr = [];
           const maxDays = Math.min(parseInt(query.historyDays) || 20, 28);
@@ -472,7 +555,6 @@ async function handleAPI(pathname, query, res) {
       ]);
 
       const schedData  = schedRes.status  === 'fulfilled' ? extractList(schedRes.value.body) : [];
-      const odds       = oddsData.status  === 'fulfilled' ? oddsData.value : [];
       const recentData = recentRes.status === 'fulfilled' ? recentRes.value : [];
 
       // Conta jogos únicos por time para debug
@@ -500,11 +582,70 @@ async function handleAPI(pathname, query, res) {
         leagueId:  String(m.leagueId || ''),
       })).filter(isNBA);
 
-      // 4. Props de jogadores (máx 3 jogos para economizar quota)
+      // 2. Busca odds do iSports para cada jogo de hoje (máx 12, paralelo)
+      const isportsOddsMap = new Map(); // matchId → parsed odds
+      if (schedule.length > 0) {
+        const gamesForOdds = schedule.slice(0, 12);
+        const isportsOddsResults = await Promise.allSettled(
+          gamesForOdds.map(g => fetchISportsOddsForGame(g.matchId))
+        );
+        for (let i = 0; i < gamesForOdds.length; i++) {
+          const res = isportsOddsResults[i];
+          if (res.status === 'fulfilled' && res.value != null) {
+            const parsed = parseISportsOdds(gamesForOdds[i], res.value);
+            if (parsed) isportsOddsMap.set(gamesForOdds[i].matchId, parsed);
+          }
+        }
+      }
+      const isportsOddsGames = isportsOddsMap.size;
+      console.log(`[bot/daily] iSports odds: ${isportsOddsGames}/${Math.min(schedule.length, 12)} jogos`);
+
+      // 3. The Odds API como tentativa adicional (não bloqueia se falhar)
+      let oddsApiGames = 0;
+      let oddsApiData = [];
+      try {
+        oddsApiData = await fetchOddsWithBet365('basketball_nba');
+        oddsApiGames = oddsApiData.length;
+      } catch(e) {
+        console.warn(`[bot/daily] The Odds API falhou: ${e.message}`);
+      }
+
+      // 4. Mescla: começa com iSports odds, substitui/sobrepõe com The Odds API se disponível
+      //    The Odds API tem prioridade quando disponível para o mesmo jogo
+      const oddsApiByTeam = new Map();
+      for (const g of oddsApiData) {
+        const key = `${(g.home_team||'').toLowerCase()}__${(g.away_team||'').toLowerCase()}`;
+        const key2 = `${(g.away_team||'').toLowerCase()}__${(g.home_team||'').toLowerCase()}`;
+        oddsApiByTeam.set(key, g);
+        oddsApiByTeam.set(key2, g);
+      }
+
+      const mergedOdds = [];
+      for (const [matchId, isportsOdd] of isportsOddsMap) {
+        const k = `${isportsOdd.home_team.toLowerCase()}__${isportsOdd.away_team.toLowerCase()}`;
+        const apiGame = oddsApiByTeam.get(k);
+        if (apiGame) {
+          // The Odds API tem prioridade
+          mergedOdds.push(apiGame);
+        } else {
+          mergedOdds.push(isportsOdd);
+        }
+      }
+      // Adiciona jogos do Odds API que não estão no iSports
+      for (const g of oddsApiData) {
+        const alreadyInMerged = mergedOdds.some(m =>
+          m.home_team === g.home_team && m.away_team === g.away_team
+        );
+        if (!alreadyInMerged) mergedOdds.push(g);
+      }
+
+      const totalOddsGames = mergedOdds.length;
+
+      // 5. Props de jogadores via The Odds API (máx 3 jogos, não bloqueia se falhar)
       const propsPerGame = [];
       const PROP_MARKETS = 'player_points,player_rebounds,player_assists,player_threes';
       let propsCount = 0;
-      for (const game of odds.slice(0, 3)) {
+      for (const game of oddsApiData.slice(0, 3)) {
         if (!game.id) continue;
         try {
           const r = await fetchJSON(oddsURL(
@@ -527,14 +668,14 @@ async function handleAPI(pathname, query, res) {
       }
 
       // Mescla props com odds gerais
-      const oddsWithProps = odds.map(g => {
+      const oddsWithProps = mergedOdds.map(g => {
         const propGame = propsPerGame.find(p =>
           (p.home_team === g.home_team && p.away_team === g.away_team) ||
           (p.home_team === g.away_team && p.away_team === g.home_team)
         );
         if (!propGame) return g;
         const merged = { ...g };
-        merged.bookmakers = g.bookmakers.map(bk => ({
+        merged.bookmakers = (g.bookmakers || []).map(bk => ({
           ...bk,
           markets: [...(bk.markets || []), ...(propGame.bookmakers[0]?.markets || [])],
         }));
@@ -553,19 +694,21 @@ async function handleAPI(pathname, query, res) {
       // analytics já filtra via _addEntry, mas aplicamos filtro duplo por segurança
       const filtered = entries.filter(e => e.ev >= evMin && e.odd >= oddMin && e.odd <= oddMax);
 
-      console.log(`[bot/daily] ${date}: ${schedule.length} jogos NBA | ${odds.length} odds | ${propsCount} props | ${filtered.length} entradas | ${recentData.length} stats históricos | ${teamsWithMin10} times c/≥10 jogos`);
+      console.log(`[bot/daily] ${date}: ${schedule.length} jogos NBA | isports=${isportsOddsGames} oddsApi=${oddsApiGames} total=${totalOddsGames} | ${propsCount} props | ${filtered.length} entradas | ${recentData.length} stats históricos | ${teamsWithMin10} times c/≥10 jogos`);
 
       return sendJSON(res, {
         ok: true, date,
         entries: filtered,
         total: filtered.length,
         debug: {
-          scheduleGames:    schedule.length,
-          oddsGames:        odds.length,
-          propsGames:       propsCount,
-          historicalStats:  recentData.length,
+          scheduleGames:      schedule.length,
+          isportsOddsGames,
+          oddsApiGames,
+          totalOddsGames,
+          propsGames:         propsCount,
+          historicalStats:    recentData.length,
           teamsWithMin10Games: teamsWithMin10,
-          daysOfHistory:    Math.min(parseInt(query.historyDays) || 10, 14),
+          daysOfHistory:      Math.min(parseInt(query.historyDays) || 20, 28),
         },
         requestsUsed: reqCounter.status(),
       });
@@ -590,6 +733,37 @@ async function handleAPI(pathname, query, res) {
           hasBet365,
           firstGame: games[0] ? { home: games[0].home_team, away: games[0].away_team, books: games[0].bookmakers?.map(b=>b.key) } : null,
           raw: r.body === null ? r.raw : undefined,
+        });
+      } catch(e) {
+        return sendJSON(res, { ok: false, error: e.message }, 500);
+      }
+    }
+
+    // /api/debug-isports-odds — diagnóstico do endpoint de odds do iSports
+    if (pathname === '/api/debug-isports-odds') {
+      const date = query.date || new Date().toISOString().slice(0,10);
+      try {
+        // Busca o schedule de hoje para pegar o primeiro jogo
+        const schedR = await iSportsFetch('/sport/basketball/schedule/basic', { date });
+        const allGames = extractList(schedR.body);
+        const nbaGames = allGames.filter(isNBA);
+        if (!nbaGames.length) {
+          return sendJSON(res, { ok: false, error: 'Nenhum jogo NBA encontrado hoje', date, total: allGames.length });
+        }
+        const firstGame = {
+          matchId:  String(nbaGames[0].matchId || nbaGames[0].id || ''),
+          homeName: nbaGames[0].homeTeamName || nbaGames[0].homeName || 'Time A',
+          awayName: nbaGames[0].awayTeamName || nbaGames[0].awayName || 'Time B',
+        };
+        const rawOdds = await fetchISportsOddsForGame(firstGame.matchId);
+        const parsed  = rawOdds ? parseISportsOdds(firstGame, rawOdds) : null;
+        return sendJSON(res, {
+          ok: true,
+          date,
+          game: firstGame,
+          rawOdds,
+          parsedOdds: parsed,
+          nbaGamesTotal: nbaGames.length,
         });
       } catch(e) {
         return sendJSON(res, { ok: false, error: e.message }, 500);
