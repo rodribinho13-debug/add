@@ -349,6 +349,7 @@
       <summary>Debug / Resposta bruta da API</summary>
       <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
         <button onclick="testOddsAPI()" style="background:#21262d;border:1px solid var(--border);color:var(--text);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px">Testar API de Odds</button>
+        <button onclick="testISportsOdds()" style="background:#21262d;border:1px solid var(--border);color:var(--text);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px">Testar iSports Odds</button>
         <button onclick="testSchedule()" style="background:#21262d;border:1px solid var(--border);color:var(--text);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px">Testar iSports Schedule</button>
       </div>
       <pre class="debug-pre" id="debug-pre"></pre>
@@ -630,6 +631,17 @@ async function testOddsAPI() {
     const r = await fetch('/api/debug-odds');
     const d = await r.json();
     pre.textContent = '[ODDS API]\n' + JSON.stringify(d, null, 2);
+  } catch(e) { pre.textContent = 'Erro: ' + e.message; }
+}
+
+async function testISportsOdds() {
+  const pre = document.getElementById('debug-pre');
+  const date = document.getElementById('inp-date').value;
+  pre.textContent = 'Testando iSports Odds...';
+  try {
+    const r = await fetch('/api/debug-isports-odds?date=' + date);
+    const d = await r.json();
+    pre.textContent = '[ISPORTS ODDS]\n' + JSON.stringify(d, null, 2);
   } catch(e) { pre.textContent = 'Erro: ' + e.message; }
 }
 
