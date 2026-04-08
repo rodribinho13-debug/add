@@ -803,7 +803,9 @@ async function handleAPI(pathname, query, res) {
             }
             try {
               const r = await iSportsFetch('/sport/basketball/stats', { date: ds }, 8000);
-              arr.push(...extractList(r.body));
+              // IMPORTANTE: filtrar só jogos NBA para o teamMap não ser contaminado por CBA/EuroLeague
+              const games = extractList(r.body).filter(isNBA);
+              arr.push(...games);
             } catch(e) {}
           }
           return arr;
@@ -813,7 +815,7 @@ async function handleAPI(pathname, query, res) {
       const schedData  = schedRes.status  === 'fulfilled' ? extractList(schedRes.value.body) : [];
       const recentData = recentRes.status === 'fulfilled' ? recentRes.value : [];
 
-      // Conta jogos únicos por time para debug
+      // Conta jogos únicos por time NBA para debug (recentData já filtrado por isNBA)
       const teamGameCounts = {};
       for (const g of recentData) {
         const h = g.homeTeamName || g.homeName || '';
@@ -822,6 +824,9 @@ async function handleAPI(pathname, query, res) {
         if (a) teamGameCounts[a] = (teamGameCounts[a] || 0) + 1;
       }
       const teamsWithMin10 = Object.values(teamGameCounts).filter(n => n >= 10).length;
+      const avgGamesPerTeam = Object.keys(teamGameCounts).length
+        ? Math.round(Object.values(teamGameCounts).reduce((s,n)=>s+n,0) / Object.keys(teamGameCounts).length)
+        : 0;
 
       // Monta schedule com jogos NBA não iniciados
       const schedule = schedData.map(m => ({
@@ -982,6 +987,7 @@ async function handleAPI(pathname, query, res) {
           propsGames:         propsCount,
           historicalStats:    recentData.length,
           teamsWithMin10Games: teamsWithMin10,
+          avgGamesPerTeam,
           daysOfHistory:      Math.min(parseInt(query.historyDays) || 20, 28),
         },
         requestsUsed: reqCounter.status(),
