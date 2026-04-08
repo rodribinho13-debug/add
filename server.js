@@ -819,45 +819,45 @@ async function handleAPI(pathname, query, res) {
       const minGames      = parseInt(query.minGames)         || 0;
       const minConfidence = query.minConfidence              || 'baixo';
 
-      // 1. Schedule de HOJE + histórico de stats (paralelo)
-      const [schedRes, recentRes] = await Promise.allSettled([
+      // 1. Schedule de HOJE + histórico de stats em PARALELO
+      //    Fetch paralelo evita timeout de serverless (Vercel 10s) em vez de loop sequencial
+      const maxDays = Math.min(parseInt(query.historyDays) || 14, 21);
+      const dayStrings = [];
+      for (let i = 1; i <= maxDays; i++) {
+        const d = new Date(date);
+        d.setDate(d.getDate() - i);
+        dayStrings.push(d.toISOString().slice(0, 10));
+      }
+      // Limita para não estourar o budget diário (reserva 2 para schedule e odds iSports)
+      const available = reqCounter.LIMIT - reqCounter.count;
+      const daysToFetch = dayStrings.slice(0, Math.max(0, available - 2));
+
+      const processDay = async (ds) => {
+        try {
+          const r = await iSportsFetch('/sport/basketball/stats', { date: ds, leagueId: NBA_LEAGUE_ID }, 8000);
+          const games = extractList(r.body);
+          const nba = games.filter(isNBA);
+          // Fallback: se leagueId filtrou e isNBA não reconheceu os nomes, usa jogos com placar real
+          const toAdd = nba.length > 0 ? nba : games.filter(g => {
+            const hs = parseFloat(g.homeScore), as_ = parseFloat(g.awayScore);
+            return !isNaN(hs) && !isNaN(as_) && (hs > 0 || as_ > 0);
+          });
+          // Normaliza abreviações (LAL → "Los Angeles Lakers") para match com o schedule
+          return toAdd.map(g => {
+            const hn = normalizeTeamName(g.homeTeamName || g.homeName || '');
+            const an = normalizeTeamName(g.awayTeamName || g.awayName || '');
+            return { ...g, homeTeamName: hn, homeName: hn, awayTeamName: an, awayName: an };
+          });
+        } catch(e) { return []; }
+      };
+
+      const [schedRes, ...histResults] = await Promise.allSettled([
         iSportsFetch('/sport/basketball/schedule/basic', { date }),
-        (async () => {
-          const arr = [];
-          const maxDays = Math.min(parseInt(query.historyDays) || 20, 28);
-          for (let i = 1; i <= maxDays; i++) {
-            const d = new Date(date);
-            d.setDate(d.getDate() - i);
-            const ds = d.toISOString().slice(0, 10);
-            if (!reqCounter.canMake(1)) {
-              console.warn(`[bot/daily] Limite próximo — histórico parou em ${i-1} dias`);
-              break;
-            }
-            try {
-              // leagueId=155 pré-filtra NBA no servidor; isNBA é rede de segurança local
-              const r = await iSportsFetch('/sport/basketball/stats', { date: ds, leagueId: NBA_LEAGUE_ID }, 8000);
-              const games = extractList(r.body);
-              const nba = games.filter(isNBA);
-              // Se isNBA bloqueou tudo (ex: nomes abreviados sem leagueId no retorno),
-              // usa jogos com placar real — provavelmente já são NBA (leagueId filtrou)
-              const toAdd = nba.length > 0 ? nba : games.filter(g => {
-                const hs = parseFloat(g.homeScore), as_ = parseFloat(g.awayScore);
-                return !isNaN(hs) && !isNaN(as_) && (hs > 0 || as_ > 0);
-              });
-              // Normaliza abreviações → nome completo para match consistente com schedule
-              arr.push(...toAdd.map(g => {
-                const hn = normalizeTeamName(g.homeTeamName || g.homeName || '');
-                const an = normalizeTeamName(g.awayTeamName || g.awayName || '');
-                return { ...g, homeTeamName: hn, homeName: hn, awayTeamName: an, awayName: an };
-              }));
-            } catch(e) {}
-          }
-          return arr;
-        })(),
+        ...daysToFetch.map(ds => processDay(ds)),
       ]);
 
-      const schedData  = schedRes.status  === 'fulfilled' ? extractList(schedRes.value.body) : [];
-      const recentData = recentRes.status === 'fulfilled' ? recentRes.value : [];
+      const schedData  = schedRes.status === 'fulfilled' ? extractList(schedRes.value.body) : [];
+      const recentData = histResults.flatMap(r => r.status === 'fulfilled' ? r.value : []);
 
       // Conta jogos únicos por time NBA para debug (recentData já filtrado por isNBA)
       const teamGameCounts = {};
@@ -1000,9 +1000,13 @@ async function handleAPI(pathname, query, res) {
         return merged;
       });
 
+      // Se não conseguimos dados históricos, ignora o filtro de jogos mínimos
+      // para ainda mostrar previsões baseadas nos priors da liga NBA
+      const effectiveMinGames = recentData.length > 0 ? minGames : 0;
+
       const cfg = {
         evMin, oddMin, oddMax, bankroll, kellyFraction,
-        minProb, maxProb, minGames, minConfidence,
+        minProb, maxProb, minGames: effectiveMinGames, minConfidence,
       };
 
       const entries = await analytics.generateAllEntries(
