@@ -587,12 +587,44 @@ const NBA_TEAM_FULL = new Set([
   'phoenix suns','portland trail blazers','sacramento kings','san antonio spurs',
   'toronto raptors','utah jazz','washington wizards',
 ]);
+// Abreviações de 2-4 letras usadas pelo iSports na API de stats (ex: LAL, GSW, BOS)
+const NBA_TEAM_ABBR = new Set([
+  'atl','bos','bkn','cha','chi','cle','dal','den','det','gsw',
+  'hou','ind','lac','lal','mem','mia','mil','min','nop','nyk',
+  'okc','orl','phi','phx','por','sac','sas','tor','uta','was',
+  'njn','noo','nola','gs','sa','no','ny','la',
+]);
 function isNBATeam(name) {
   if (!name) return false;
   const n = name.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
   if (NBA_TEAM_FULL.has(n)) return true;
+  // Abreviação de 2-4 letras (LAL, GSW, etc.)
+  if (n.length >= 2 && n.length <= 4 && NBA_TEAM_ABBR.has(n)) return true;
   const last = n.split(' ').pop();
-  return last.length > 3 && NBA_TEAM_KEYWORDS.has(last);
+  // >=2 chars para aceitar "76ers", "nets", etc.
+  return last.length >= 2 && NBA_TEAM_KEYWORDS.has(last);
+}
+
+// Abreviação → nome completo (para normalizar stats do iSports antes de passar ao analytics)
+const NBA_ABBR_FULL = {
+  atl:'Atlanta Hawks',bos:'Boston Celtics',bkn:'Brooklyn Nets',njn:'Brooklyn Nets',
+  cha:'Charlotte Hornets',chi:'Chicago Bulls',cle:'Cleveland Cavaliers',
+  dal:'Dallas Mavericks',den:'Denver Nuggets',det:'Detroit Pistons',
+  gsw:'Golden State Warriors',gs:'Golden State Warriors',
+  hou:'Houston Rockets',ind:'Indiana Pacers',lac:'LA Clippers',
+  lal:'Los Angeles Lakers',mem:'Memphis Grizzlies',mia:'Miami Heat',
+  mil:'Milwaukee Bucks',min:'Minnesota Timberwolves',nop:'New Orleans Pelicans',
+  noo:'New Orleans Pelicans',no:'New Orleans Pelicans',nola:'New Orleans Pelicans',
+  nyk:'New York Knicks',ny:'New York Knicks',okc:'Oklahoma City Thunder',
+  orl:'Orlando Magic',phi:'Philadelphia 76ers',phx:'Phoenix Suns',
+  por:'Portland Trail Blazers',sac:'Sacramento Kings',sas:'San Antonio Spurs',
+  sa:'San Antonio Spurs',tor:'Toronto Raptors',uta:'Utah Jazz',was:'Washington Wizards',
+};
+/** Normaliza nome de time: converte abreviações para nome completo */
+function normalizeTeamName(name) {
+  if (!name) return name;
+  const k = name.toLowerCase().replace(/[^a-z]/g, '');
+  return NBA_ABBR_FULL[k] || name;
 }
 
 function isNBA(m) {
@@ -787,33 +819,45 @@ async function handleAPI(pathname, query, res) {
       const minGames      = parseInt(query.minGames)         || 0;
       const minConfidence = query.minConfidence              || 'baixo';
 
-      // 1. Schedule de HOJE + histórico de stats (paralelo)
-      const [schedRes, recentRes] = await Promise.allSettled([
+      // 1. Schedule de HOJE + histórico de stats em PARALELO
+      //    Fetch paralelo evita timeout de serverless (Vercel 10s) em vez de loop sequencial
+      const maxDays = Math.min(parseInt(query.historyDays) || 14, 21);
+      const dayStrings = [];
+      for (let i = 1; i <= maxDays; i++) {
+        const d = new Date(date);
+        d.setDate(d.getDate() - i);
+        dayStrings.push(d.toISOString().slice(0, 10));
+      }
+      // Limita para não estourar o budget diário (reserva 2 para schedule e odds iSports)
+      const available = reqCounter.LIMIT - reqCounter.count;
+      const daysToFetch = dayStrings.slice(0, Math.max(0, available - 2));
+
+      const processDay = async (ds) => {
+        try {
+          const r = await iSportsFetch('/sport/basketball/stats', { date: ds, leagueId: NBA_LEAGUE_ID }, 8000);
+          const games = extractList(r.body);
+          const nba = games.filter(isNBA);
+          // Fallback: se leagueId filtrou e isNBA não reconheceu os nomes, usa jogos com placar real
+          const toAdd = nba.length > 0 ? nba : games.filter(g => {
+            const hs = parseFloat(g.homeScore), as_ = parseFloat(g.awayScore);
+            return !isNaN(hs) && !isNaN(as_) && (hs > 0 || as_ > 0);
+          });
+          // Normaliza abreviações (LAL → "Los Angeles Lakers") para match com o schedule
+          return toAdd.map(g => {
+            const hn = normalizeTeamName(g.homeTeamName || g.homeName || '');
+            const an = normalizeTeamName(g.awayTeamName || g.awayName || '');
+            return { ...g, homeTeamName: hn, homeName: hn, awayTeamName: an, awayName: an };
+          });
+        } catch(e) { return []; }
+      };
+
+      const [schedRes, ...histResults] = await Promise.allSettled([
         iSportsFetch('/sport/basketball/schedule/basic', { date }),
-        (async () => {
-          const arr = [];
-          const maxDays = Math.min(parseInt(query.historyDays) || 20, 28);
-          for (let i = 1; i <= maxDays; i++) {
-            const d = new Date(date);
-            d.setDate(d.getDate() - i);
-            const ds = d.toISOString().slice(0, 10);
-            if (!reqCounter.canMake(1)) {
-              console.warn(`[bot/daily] Limite próximo — histórico parou em ${i-1} dias`);
-              break;
-            }
-            try {
-              const r = await iSportsFetch('/sport/basketball/stats', { date: ds }, 8000);
-              // IMPORTANTE: filtrar só jogos NBA para o teamMap não ser contaminado por CBA/EuroLeague
-              const games = extractList(r.body).filter(isNBA);
-              arr.push(...games);
-            } catch(e) {}
-          }
-          return arr;
-        })(),
+        ...daysToFetch.map(ds => processDay(ds)),
       ]);
 
-      const schedData  = schedRes.status  === 'fulfilled' ? extractList(schedRes.value.body) : [];
-      const recentData = recentRes.status === 'fulfilled' ? recentRes.value : [];
+      const schedData  = schedRes.status === 'fulfilled' ? extractList(schedRes.value.body) : [];
+      const recentData = histResults.flatMap(r => r.status === 'fulfilled' ? r.value : []);
 
       // Conta jogos únicos por time NBA para debug (recentData já filtrado por isNBA)
       const teamGameCounts = {};
@@ -828,13 +872,13 @@ async function handleAPI(pathname, query, res) {
         ? Math.round(Object.values(teamGameCounts).reduce((s,n)=>s+n,0) / Object.keys(teamGameCounts).length)
         : 0;
 
-      // Monta schedule com jogos NBA não iniciados
+      // Monta schedule com jogos NBA não iniciados (normaliza nomes para match com teamMap)
       const schedule = schedData.map(m => ({
         matchId:   String(m.matchId || m.id || ''),
         homeId:    String(m.homeTeamId || m.homeId || ''),
         awayId:    String(m.awayTeamId || m.awayId || ''),
-        homeName:  m.homeTeamName || m.homeName || 'Time A',
-        awayName:  m.awayTeamName || m.awayName || 'Time B',
+        homeName:  normalizeTeamName(m.homeTeamName || m.homeName || '') || 'Time A',
+        awayName:  normalizeTeamName(m.awayTeamName || m.awayName || '') || 'Time B',
         homeScore: m.homeScore,
         awayScore: m.awayScore,
         status:    m.status != null ? m.status : -1,
@@ -956,9 +1000,13 @@ async function handleAPI(pathname, query, res) {
         return merged;
       });
 
+      // Se não conseguimos dados históricos, ignora o filtro de jogos mínimos
+      // para ainda mostrar previsões baseadas nos priors da liga NBA
+      const effectiveMinGames = recentData.length > 0 ? minGames : 0;
+
       const cfg = {
         evMin, oddMin, oddMax, bankroll, kellyFraction,
-        minProb, maxProb, minGames, minConfidence,
+        minProb, maxProb, minGames: effectiveMinGames, minConfidence,
       };
 
       const entries = await analytics.generateAllEntries(
@@ -969,6 +1017,11 @@ async function handleAPI(pathname, query, res) {
       const filtered = entries.filter(e => e.ev >= evMin && e.odd >= oddMin && e.odd <= oddMax);
 
       console.log(`[bot/daily] ${date}: ${schedule.length} jogos NBA | isports=${isportsOddsGames} oddsApi=${oddsApiGames} total=${totalOddsGames} | ${propsCount} props | ${filtered.length} entradas | ${recentData.length} stats históricos | ${teamsWithMin10} times c/≥10 jogos`);
+
+      // Top times por nº de jogos no teamMap — útil para verificar se os dados históricos estão corretos
+      const sampleTeams = Object.entries(teamGameCounts)
+        .sort((a, b) => b[1] - a[1]).slice(0, 10)
+        .map(([t, n]) => `${t}:${n}`);
 
       return sendJSON(res, {
         ok: true, date,
@@ -989,6 +1042,7 @@ async function handleAPI(pathname, query, res) {
           teamsWithMin10Games: teamsWithMin10,
           avgGamesPerTeam,
           daysOfHistory:      Math.min(parseInt(query.historyDays) || 20, 28),
+          sampleTeams,
         },
         requestsUsed: reqCounter.status(),
       });

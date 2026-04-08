@@ -111,11 +111,31 @@ function norm(name) {
   return name.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
 }
 
+// Abreviações NBA → palavra-chave do time (para matching entre "LAL" e "Los Angeles Lakers")
+const _ABBR = {
+  atl:'hawks',bos:'celtics',bkn:'nets',njn:'nets',cha:'hornets',chi:'bulls',
+  cle:'cavaliers',dal:'mavericks',den:'nuggets',det:'pistons',
+  gsw:'warriors',gs:'warriors',hou:'rockets',ind:'pacers',
+  lac:'clippers',lal:'lakers',mem:'grizzlies',mia:'heat',mil:'bucks',
+  min:'timberwolves',nop:'pelicans',noo:'pelicans',no:'pelicans',nola:'pelicans',
+  nyk:'knicks',ny:'knicks',okc:'thunder',orl:'magic',
+  phi:'sixers',phx:'suns',por:'blazers',sac:'kings',
+  sas:'spurs',sa:'spurs',tor:'raptors',uta:'jazz',was:'wizards',
+};
+
+/** Extrai palavra-chave identificadora: resolve abreviação ou usa última palavra */
+function _teamKw(n) {
+  if (_ABBR[n]) return _ABBR[n];
+  const parts = n.split(' ');
+  return parts[parts.length - 1];
+}
+
 function namesMatch(a, b) {
   const na = norm(a), nb = norm(b);
   if (na === nb) return true;
-  const la = na.split(' ').pop(), lb = nb.split(' ').pop();
-  return la.length > 3 && la === lb;
+  const ka = _teamKw(na), kb = _teamKw(nb);
+  // palavra-chave precisa ter >=4 chars e ser igual (evita false positives em abreviações curtas)
+  return ka.length >= 4 && ka === kb;
 }
 
 // ─────────────────────────────────────────────
@@ -168,15 +188,11 @@ function buildPlayerMap(statsArr) {
       if (!p.playerId) continue;
       const id = String(p.playerId);
       if (!map[id]) map[id] = { name: p.playerName || id, points:[], rebounds:[], assists:[], threes:[] };
-      // Só registra se o campo existir no dado (null = não jogou / não rastreado)
-      if (p.score  != null) map[id].points.push(parseFloat(p.score)  || 0);
-      if (p.defend != null || p.attack != null) {
-        const reb = (parseFloat(p.defend) || 0) + (parseFloat(p.attack) || 0);
-        map[id].rebounds.push(reb);
-      }
+      if (p.score        != null) map[id].points.push(parseFloat(p.score) || 0);
+      const reb = (parseFloat(p.defend) || 0) + (parseFloat(p.attack) || 0);
+      map[id].rebounds.push(reb);
       if (p.assist        != null) map[id].assists.push(parseFloat(p.assist)        || 0);
-      if (p.threePointHit != null && parseFloat(p.threePointHit) > 0)
-        map[id].threes.push(parseFloat(p.threePointHit));
+      if (p.threePointHit != null) map[id].threes .push(parseFloat(p.threePointHit) || 0);
     }
   }
   return map;
@@ -517,11 +533,8 @@ function analyzePlayerProps(gameOdds, playerMap, config) {
       const statArr = pData?.[mInfo.field] || [];
       const nPlayer = statArr.length;
 
-      // Exige mínimo 5 jogos para props de jogadores
-      if (nPlayer < 5) continue;
-
-      // Skip se todos os valores são zero (iSports não rastreia este stat)
-      if (!statArr.some(v => v > 0)) continue;
+      // Exige mínimo 3 jogos para props de jogadores
+      if (nPlayer < 3) continue;
 
       const rawAvg = weightedMean(statArr);
       const avg    = bayesianAvg(rawAvg, nPlayer, mInfo.def.avg, 5);
@@ -613,25 +626,21 @@ function buildEstimatedOdds(game, teamMap) {
   const sA = teamStats(teamMap, awayName);
   const spreadSig = adaptiveSpreadSigma(sH, sA);
 
-  // Sigma do total
+  // Sigma do total (raiz da soma dos quadrados)
   const sdH = stddev(sH?.scores || [], simpleMean(sH?.scores || [])) || NBA.teamSigma;
   const sdA = stddev(sA?.scores || [], simpleMean(sA?.scores || [])) || NBA.teamSigma;
   const totalSig = Math.max(11, Math.min(Math.sqrt(sdH ** 2 + sdA ** 2), 22));
 
-  // Probabilidades do modelo para cada mercado
   const pHome      = probOver(0, expectedMargin, spreadSig);
   const pAway      = 1 - pHome;
-
   const totalLine  = Math.round(expectedTotal * 2) / 2;
   const pOver      = probOver(totalLine, expectedTotal, totalSig);
   const pUnder     = 1 - pOver;
-
   const spread     = Math.round(expectedMargin * 2) / 2;
   const pHomeCover = probOver(-spread, expectedMargin, spreadSig);
   const pAwayCover = 1 - pHomeCover;
 
-  // JUICE < 1 → odds ligeiramente acima do justo → EV ≈ +5.3%
-  // Representa "odd mínima que você precisa encontrar no bookmaker para ter EV positivo"
+  // JUICE < 1 → odds acima do justo → EV ≈ +5.3% (fallback sem bookmaker real)
   const JUICE = 0.95;
   const mkOdd = p => +(Math.max(1.1, 1 / (Math.max(0.05, Math.min(0.95, p)) * JUICE)).toFixed(3));
 
@@ -645,7 +654,7 @@ function buildEstimatedOdds(game, teamMap) {
           { name: awayName, price: mkOdd(pAway) },
         ]},
         { key: 'totals', outcomes: [
-          { name: 'Over',  point: totalLine, price: mkOdd(pOver) },
+          { name: 'Over',  point: totalLine, price: mkOdd(pOver)  },
           { name: 'Under', point: totalLine, price: mkOdd(pUnder) },
         ]},
         { key: 'spreads', outcomes: [
@@ -681,8 +690,7 @@ async function generateAllEntries(data, config) {
     const hs  = parseFloat(game.homeScore);
     const as_ = parseFloat(game.awayScore);
     if (!isNaN(hs) && !isNaN(as_) && (hs > 0 || as_ > 0)) continue;
-
-    // Fallback: status alto = claramente terminado (iSports: 1=agendado, 2-6=em jogo, 7+=terminado)
+    // Fallback: iSports usa status=1 para agendado, >=7 para terminado
     const status = parseInt(game.status ?? 1);
     if (status >= 7) continue;
 
